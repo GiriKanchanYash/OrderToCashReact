@@ -1,0 +1,11 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+snowflake-connector-python>=3.6.0
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+# Microsoft Fabric data source
+pyodbc>=5.0.0
+azure-identity>=1.15.0
+openai>=1.30.0
+sqlglot==30.21.0

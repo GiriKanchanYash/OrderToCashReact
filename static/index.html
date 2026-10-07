@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OrderToCash</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Data-source selection (Snowflake | Fabric). The o2c_data_source cookie is sent
+      // with every /api request and read by server.py to route it to the chosen source.
+      (function () {
+        var KEY = "o2c_data_source", ok = { snowflake: 1, fabric: 1 };
+        var m = document.cookie.match(/(?:^|;\s*)o2c_data_source=([^;]+)/);
+        var v = m ? decodeURIComponent(m[1]) : null;
+        if (!ok[v]) { try { v = localStorage.getItem(KEY); } catch (e) { v = null; } }
+        window.__O2C_SET_DS__ = function (s) {
+          if (!ok[s]) return;
+          document.cookie = KEY + "=" + s + "; path=/; max-age=31536000; SameSite=Lax";
+          try { localStorage.setItem(KEY, s); } catch (e) {}
+          window.__O2C_DS__ = s;
+        };
+        if (ok[v]) window.__O2C_SET_DS__(v); else window.__O2C_DS__ = null;
+      })();
+    </script>
+    <style>
+      .datasource-picker{display:flex;align-items:center;gap:8px;margin-left:auto;font-size:12px;color:var(--text-subtle);white-space:nowrap}
+      .datasource-picker-label{font-weight:500;letter-spacing:.2px}
+      .datasource-picker-select{font:inherit;font-size:13px;font-weight:500;color:var(--text);background:var(--panel,#fff);border:1px solid var(--divider);border-radius:10px;padding:6px 28px 6px 10px;cursor:pointer;appearance:none;-webkit-appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--text-subtle) 50%),linear-gradient(135deg,var(--text-subtle) 50%,transparent 50%);background-position:calc(100% - 15px) 52%,calc(100% - 10px) 52%;background-size:5px 5px;background-repeat:no-repeat}
+      .datasource-picker-select:hover{border-color:var(--brand)}
+      .datasource-picker-select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px #0d7d7226}
+      @media (max-width:720px){.datasource-picker-label{display:none}.datasource-picker-select{font-size:12px;padding:5px 24px 5px 8px}}
+    </style>
+    <script type="module" crossorigin src="/assets/index-Dh8OojcJ.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-AHZWY_wO.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
