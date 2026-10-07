@@ -1720,7 +1720,7 @@ def _agent_entity_context(
             ca.INVOICE_ID,
             s.NOTES
         FROM {BM}.collection_activity_vw ca
-        LEFT JOIN {DB}.SAP_STG.COLLECTION_ACTIVITY s
+        LEFT JOIN {DB}.raw_vault.collection_activity s
           ON s.ACTIVITY_ID = ca.ACTIVITY_ID
         WHERE ca.CUSTOMER_ID = '{safe_id}' {co_filter}{contact_filter}
         ORDER BY ca.ACTIVITY_DATE DESC NULLS LAST
@@ -2223,13 +2223,13 @@ def billing_agent_mark_reviewed(payload: dict) -> dict:
     try:
         seq_rows = run_query(f"""
             SELECT COALESCE(MAX(STATUS_SEQ), 0) + 1 AS next_seq
-            FROM {DB}.SAP_STG.ORDER_STATUS_HISTORY
+            FROM {DB}.raw_vault.order_status_history
             WHERE SALES_ORDER_ID = '{safe_so}'
         """)
         next_seq = int(seq_rows[0].get("next_seq") or seq_rows[0].get("NEXT_SEQ") or 1)
 
         run_execute(f"""
-            INSERT INTO {DB}.SAP_STG.ORDER_STATUS_HISTORY (
+            INSERT INTO {DB}.raw_vault.order_status_history (
                 STATUS_EVENT_ID, SALES_ORDER_ID, CUSTOMER_ID, COMPANY_CODE, STATUS_SEQ,
                 LIFECYCLE_AREA, ORDER_STATUS, STATUS_DATE, STATUS_TIMESTAMP, CHANGED_BY,
                 IS_LATEST_STATUS, NOTES, CREATED_AT, UPDATED_AT, SOURCE_SYSTEM
@@ -2782,7 +2782,7 @@ def collections_agent_log_ptp(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            INSERT INTO {DB}.SAP_STG.COLLECTION_ACTIVITY (
+            INSERT INTO {DB}.raw_vault.collection_activity (
                 ACTIVITY_ID, CUSTOMER_ID, COMPANY_CODE, ACTIVITY_TYPE, ACTIVITY_DATE,
                 CONTACT_OUTCOME, IS_RIGHT_PARTY_CONTACT, NOTES, SOURCE_SYSTEM
             )
@@ -2794,7 +2794,7 @@ def collections_agent_log_ptp(payload: dict) -> dict:
 
         invoice_sql = f"'{safe_invoice}'" if safe_invoice else "NULL"
         run_execute(f"""
-            INSERT INTO {DB}.SAP_STG.PROMISE_TO_PAY (
+            INSERT INTO {DB}.raw_vault.promised_to_pay (
                 PTP_ID, CUSTOMER_ID, COMPANY_CODE, INVOICE_ID, ACTIVITY_ID,
                 PROMISE_DATE, PROMISED_PAY_DATE, PROMISED_AMOUNT, CURRENCY_CODE,
                 PTP_STATUS, IS_KEPT, SOURCE_SYSTEM
@@ -2933,7 +2933,7 @@ def collections_agent_process_inbound(payload: dict) -> dict:
 def collections_agent_auto_flow(payload: dict) -> dict:
     """Fully automated demo flow: send reminder -> simulate reply -> parse -> log PTP."""
     customer_id = str(payload.get("customer_id") or "").strip()
-    if not customer_id:
+    if not customer_id:    
         return {"ok": False, "steps": [], "message": "customer_id is required"}
 
     name = str(payload.get("customer_name") or customer_id)
@@ -3014,7 +3014,7 @@ def collections_agent_mark_contacted(payload: dict) -> dict:
 
     try:
         run_query(f"""
-            INSERT INTO {DB}.SAP_STG.COLLECTION_ACTIVITY (
+            INSERT INTO {DB}.raw_vault.collection_activity (
                 ACTIVITY_ID, CUSTOMER_ID, COMPANY_CODE, ACTIVITY_TYPE, ACTIVITY_DATE,
                 CONTACT_OUTCOME, IS_RIGHT_PARTY_CONTACT, NOTES, SOURCE_SYSTEM
             )
@@ -3273,7 +3273,7 @@ def cash_application_apply(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {DB}.SAP_STG.PAYMENT
+            UPDATE {DB}.raw_vault.payment
             SET INVOICE_ID = '{safe_inv}',
                 CLEARING_DATE = CURRENT_DATE(),
                 IS_PARTIAL = {str(is_partial).upper()},
@@ -3518,7 +3518,7 @@ def dispute_agent_update_status(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {DB}.SAP_STG.DISPUTE_CASE
+            UPDATE {DB}.raw_vault.dispute_case
             SET DISPUTE_STATUS = '{new_status}',
                 OWNER = COALESCE(OWNER, 'OrderToCash Agent'),
                 UPDATED_AT = CURRENT_TIMESTAMP()
@@ -3550,7 +3550,7 @@ def dispute_agent_resolve(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {DB}.SAP_STG.DISPUTE_CASE
+            UPDATE {DB}.raw_vault.dispute_case
             SET DISPUTE_STATUS = '{status}',
                 RESOLVED_AMOUNT = {resolved_amount},
                 RESOLVED_DATE = CURRENT_DATE(),
