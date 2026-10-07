@@ -130,7 +130,7 @@ _P = _load_conn_params()
 DATABASE = _P["database"] or "OrderToCash_DW"
 DB = DATABASE
 SCHEMA = _P["schema"] or "INFORMATION_MART"
-BM = f"{DB}.BUSINESS_MART"
+BM = f"{DB}.business_mart"
 IM = SCHEMA
 
 

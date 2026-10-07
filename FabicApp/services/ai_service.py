@@ -302,7 +302,7 @@ def run_quick_analysis(key: str) -> dict:
     if key == "dso_overview":
         sql = f"""
         SELECT PERIOD_MONTH::VARCHAR AS period, COMPANY_CODE, DSO
-        FROM {BM}.DSO_VW
+        FROM {BM}.dso_vw
         WHERE DSO IS NOT NULL
         ORDER BY PERIOD_MONTH DESC
         LIMIT 50
@@ -328,7 +328,7 @@ def run_quick_analysis(key: str) -> dict:
         sql = f"""
         SELECT COMPANY_CODE, TOTAL_AR, PAST_DUE_AR, PAST_DUE_PCT,
                BUCKET_1_30, BUCKET_31_60, BUCKET_61_90, BUCKET_90_PLUS
-        FROM {BM}.PAST_DUE_VW
+        FROM {BM}.past_due_vw
         ORDER BY PAST_DUE_AR DESC
         """
         rows = run_query(sql)
@@ -371,7 +371,7 @@ def run_quick_analysis(key: str) -> dict:
     if key == "collection_effectiveness":
         sql = f"""
         SELECT PERIOD_MONTH::VARCHAR AS period, AVG(CEI) AS cei
-        FROM {BM}.CEI_VW
+        FROM {BM}.cei_vw
         WHERE CEI IS NOT NULL
         GROUP BY PERIOD_MONTH
         ORDER BY PERIOD_MONTH DESC
@@ -396,7 +396,7 @@ def run_quick_analysis(key: str) -> dict:
     if key == "cash_forecast_accuracy":
         sql = f"""
         SELECT PERIOD_MONTH::VARCHAR AS period, COMPANY_CODE, MAPE, WAPE, FORECAST_BIAS
-        FROM {BM}.FORECAST_ACCURACY_VW
+        FROM {BM}.forecast_accuracy_vw
         ORDER BY PERIOD_MONTH DESC
         LIMIT 24
         """
@@ -627,7 +627,7 @@ def _resolve_customer_label(name: str | None, customer_id: str | None) -> str:
 
 
 def _enrich_copilot_rows(rows: list[dict]) -> list[dict]:
-    """Fill missing or code-like customer_name from CUSTOMER_VW when analyst SQL omits the join."""
+    """Fill missing or code-like customer_name from customer_vw when analyst SQL omits the join."""
     if not rows:
         return rows
     missing_ids: set[str] = set()
@@ -648,7 +648,7 @@ def _enrich_copilot_rows(rows: list[dict]) -> list[dict]:
                 CUSTOMER_NAME,
                 RISK_CLASS,
                 CUSTOMER_SEGMENT
-            FROM {BM}.CUSTOMER_VW
+            FROM {BM}.customer_vw
             WHERE CUSTOMER_ID IN ({in_clause})
         """)
     except Exception:
@@ -1334,7 +1334,7 @@ def _fetch_latest_invoices(limit: int = 10) -> tuple[list[dict], str]:
         if rows:
             return _enrich_copilot_rows(rows), sql_tool
     except Exception:
-        log.warning("SP_TOOL_GET_LATEST_INVOICE failed; using AR_INVOICE_VW fallback", exc_info=True)
+        log.warning("SP_TOOL_GET_LATEST_INVOICE failed; using ar_invoice_vw fallback", exc_info=True)
     sql = f"""
         SELECT
             inv.INVOICE_ID AS invoice_id,
@@ -1347,12 +1347,12 @@ def _fetch_latest_invoices(limit: int = 10) -> tuple[list[dict], str]:
             inv.GROSS_AMOUNT AS gross_amount,
             inv.INVOICE_STATUS AS invoice_status,
             inv.CURRENCY_CODE AS currency_code
-        FROM {BM}.AR_INVOICE_VW inv
-        LEFT JOIN {BM}.CUSTOMER_VW cu
+        FROM {BM}.ar_invoice_vw inv
+        LEFT JOIN {BM}.customer_vw cu
           ON cu.CUSTOMER_ID = inv.CUSTOMER_ID AND cu.COMPANY_CODE = inv.COMPANY_CODE
         LEFT JOIN (
             SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-            FROM {BM}.CUSTOMER_VW
+            FROM {BM}.customer_vw
             GROUP BY CUSTOMER_ID
         ) cu_any
           ON cu_any.CUSTOMER_ID = inv.CUSTOMER_ID
@@ -1377,13 +1377,13 @@ def _fetch_top_invoices(limit: int = 5) -> tuple[list[dict], str]:
             inv.GROSS_AMOUNT AS gross_amount,
             inv.INVOICE_STATUS AS invoice_status,
             inv.CURRENCY_CODE AS currency_code
-        FROM {BM}.AR_INVOICE_VW inv
-        LEFT JOIN {BM}.CUSTOMER_VW cu
+        FROM {BM}.ar_invoice_vw inv
+        LEFT JOIN {BM}.customer_vw cu
           ON cu.CUSTOMER_ID = inv.CUSTOMER_ID
          AND cu.COMPANY_CODE = inv.COMPANY_CODE
         LEFT JOIN (
             SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-            FROM {BM}.CUSTOMER_VW
+            FROM {BM}.customer_vw
             GROUP BY CUSTOMER_ID
         ) cu_any
           ON cu_any.CUSTOMER_ID = inv.CUSTOMER_ID
@@ -1401,8 +1401,8 @@ def _past_due_customers_sql(limit: int = 10) -> str:
             COALESCE(c.CUSTOMER_NAME, ar.CUSTOMER_ID) AS customer_name,
             SUM(ar.OPEN_AMOUNT_USD) AS past_due_usd,
             MAX(ar.DAYS_PAST_DUE) AS max_days_past_due
-        FROM {BM}.AR_OPEN_ITEM_VW ar
-        LEFT JOIN {BM}.CUSTOMER_VW c
+        FROM {BM}.ar_open_item_vw ar
+        LEFT JOIN {BM}.customer_vw c
           ON c.CUSTOMER_ID = ar.CUSTOMER_ID
          AND c.COMPANY_CODE = ar.COMPANY_CODE
         WHERE ar.DAYS_PAST_DUE > 0
@@ -1681,7 +1681,7 @@ def _agent_entity_context(
     if sales_order_id and not invoice_id:
         inv_rows = run_query(f"""
             SELECT DISTINCT INVOICE_ID
-            FROM {BM}.AR_INVOICE_VW
+            FROM {BM}.ar_invoice_vw
             WHERE SALES_ORDER_ID = '{safe_so}'
               AND INVOICE_ID IS NOT NULL
             LIMIT 20
@@ -1719,7 +1719,7 @@ def _agent_entity_context(
             ca.CONTACT_OUTCOME,
             ca.INVOICE_ID,
             s.NOTES
-        FROM {BM}.COLLECTION_ACTIVITY_VW ca
+        FROM {BM}.collection_activity_vw ca
         LEFT JOIN {DB}.SAP_STG.COLLECTION_ACTIVITY s
           ON s.ACTIVITY_ID = ca.ACTIVITY_ID
         WHERE ca.CUSTOMER_ID = '{safe_id}' {co_filter}{contact_filter}
@@ -1742,7 +1742,7 @@ def _agent_entity_context(
             d.DISPUTE_STATUS,
             d.DISPUTED_AMOUNT,
             d.OPENED_DATE
-        FROM {BM}.DISPUTE_VW d
+        FROM {BM}.dispute_vw d
         WHERE d.CUSTOMER_ID = '{safe_id}'
           AND UPPER(COALESCE(d.DISPUTE_STATUS, '')) NOT IN (
               'RESOLVED', 'CLOSED', 'CANCELLED', 'WRITTEN_OFF'
@@ -1755,7 +1755,7 @@ def _agent_entity_context(
     if invoice_id:
         ptp_rows = run_query(f"""
             SELECT PTP_ID, INVOICE_ID, PROMISED_PAY_DATE, PROMISED_AMOUNT, PTP_STATUS
-            FROM {BM}.PTP_VW
+            FROM {BM}.ptp_vw
             WHERE CUSTOMER_ID = '{safe_id}'
               AND INVOICE_ID = '{safe_inv}'
             ORDER BY PROMISED_PAY_DATE DESC NULLS LAST
@@ -1765,7 +1765,7 @@ def _agent_entity_context(
         inv_in = ", ".join(f"'{i}'" for i in order_invoice_ids)
         ptp_rows = run_query(f"""
             SELECT PTP_ID, INVOICE_ID, PROMISED_PAY_DATE, PROMISED_AMOUNT, PTP_STATUS
-            FROM {BM}.PTP_VW
+            FROM {BM}.ptp_vw
             WHERE CUSTOMER_ID = '{safe_id}'
               AND INVOICE_ID IN ({inv_in})
             ORDER BY PROMISED_PAY_DATE DESC NULLS LAST
@@ -2012,13 +2012,13 @@ def billing_agent_queue(customer_id: str | None = None) -> list[dict]:
                 ) THEN 'PLAN_THIS_WEEK'
                 ELSE 'MONITOR'
             END AS action_group
-        FROM {BM}.BILLING_ELIGIBILITY_VW be
-        LEFT JOIN {BM}.CUSTOMER_VW cu
+        FROM {BM}.billing_eligibility_vw be
+        LEFT JOIN {BM}.customer_vw cu
           ON cu.CUSTOMER_ID = be.CUSTOMER_ID
          AND cu.COMPANY_CODE = be.COMPANY_CODE
         LEFT JOIN (
             SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-            FROM {BM}.CUSTOMER_VW
+            FROM {BM}.customer_vw
             GROUP BY CUSTOMER_ID
         ) cu_any
           ON cu_any.CUSTOMER_ID = be.CUSTOMER_ID
@@ -2274,14 +2274,14 @@ def proactive_dispute_queue() -> list[dict]:
         r.PREDICTED_DISPUTE_DATE::VARCHAR AS predicted_dispute_date,
         r.ACTION_GROUP AS action_group,
         r.PRIORITY_SCORE AS priority_score
-    FROM {BM}.PROACTIVE_DISPUTE_RISK_VW r
+    FROM {BM}.proactive_dispute_risk_vw r
     ORDER BY r.PRIORITY_SCORE DESC
     LIMIT 50
     """
     try:
         rows = run_query(sql)
     except Exception:
-        log.warning("PROACTIVE_DISPUTE_RISK_VW unavailable; using billing eligibility fallback", exc_info=True)
+        log.warning("proactive_dispute_risk_vw unavailable; using billing eligibility fallback", exc_info=True)
         rows = run_query(f"""
             SELECT
                 'RISK-FALL-' || be.SALES_ORDER_ID AS risk_id,
@@ -2299,7 +2299,7 @@ def proactive_dispute_queue() -> list[dict]:
                 dateadd(day, 14, current_date())::varchar AS predicted_dispute_date,
                 'PLAN_THIS_WEEK' AS action_group,
                 be.TOTAL_ORDER_VALUE * 0.65 AS priority_score
-            FROM {BM}.BILLING_ELIGIBILITY_VW be
+            FROM {BM}.billing_eligibility_vw be
             WHERE be.BILLING_ELIGIBILITY_STATUS IN ('BLOCKED', 'PENDING_GOODS_ISSUE', 'PENDING_MILESTONE')
             ORDER BY be.TOTAL_ORDER_VALUE DESC
             LIMIT 25
@@ -2413,7 +2413,7 @@ def collections_agent_queue(annual_interest_rate_pct: float = 8.0, customer_id: 
     sql = f"""
     WITH rpc AS (
         SELECT COMPANY_CODE, AVG(RPC_RATE_PCT) AS avg_rpc
-        FROM {BM}.RPC_VW
+        FROM {BM}.rpc_vw
         GROUP BY COMPANY_CODE
     ),
     base AS (
@@ -2449,8 +2449,8 @@ def collections_agent_queue(annual_interest_rate_pct: float = 8.0, customer_id: 
                 WHEN DATEDIFF('day', CURRENT_DATE(), ar.DUE_DATE) >= 8 THEN 'MONITOR'
                 ELSE 'ACT_NOW'
             END AS action_group
-        FROM {BM}.AR_OPEN_ITEM_VW ar
-        LEFT JOIN {BM}.CUSTOMER_VW cu
+        FROM {BM}.ar_open_item_vw ar
+        LEFT JOIN {BM}.customer_vw cu
           ON cu.CUSTOMER_ID = ar.CUSTOMER_ID
          AND cu.COMPANY_CODE = ar.COMPANY_CODE
         LEFT JOIN (
@@ -2460,7 +2460,7 @@ def collections_agent_queue(annual_interest_rate_pct: float = 8.0, customer_id: 
                 MAX(CUSTOMER_SEGMENT) AS CUSTOMER_SEGMENT,
                 MAX(DUNNING_LEVEL) AS DUNNING_LEVEL,
                 MAX(ACCOUNT_MANAGER) AS ACCOUNT_MANAGER
-            FROM {BM}.CUSTOMER_VW
+            FROM {BM}.customer_vw
             GROUP BY CUSTOMER_ID
         ) cu_any
           ON cu_any.CUSTOMER_ID = ar.CUSTOMER_ID
@@ -2543,8 +2543,8 @@ def _collections_invoice_sql(
             ar.IS_DISPUTED,
             ar.COMPANY_CODE,
             d.DISPUTE_ID
-        FROM {BM}.AR_OPEN_ITEM_VW ar
-        LEFT JOIN {BM}.DISPUTE_VW d
+        FROM {BM}.ar_open_item_vw ar
+        LEFT JOIN {BM}.dispute_vw d
           ON d.INVOICE_ID = ar.INVOICE_ID
          AND d.CUSTOMER_ID = ar.CUSTOMER_ID
          AND upper(coalesce(d.DISPUTE_STATUS, '')) NOT IN ('RESOLVED', 'CLOSED', 'CANCELLED')
@@ -2583,7 +2583,7 @@ def collections_agent_recommendation(payload: dict) -> dict:
 
     cust_rows = run_query(f"""
         SELECT CUSTOMER_ID, CUSTOMER_NAME, CUSTOMER_SEGMENT, DUNNING_LEVEL, CREDIT_EXPOSURE, PAYMENT_TERMS
-        FROM {BM}.CUSTOMER_VW WHERE CUSTOMER_ID = '{safe_id}' LIMIT 1
+        FROM {BM}.customer_vw WHERE CUSTOMER_ID = '{safe_id}' LIMIT 1
     """)
     ar_rows, invoice_rows = _fetch_collections_invoices(
         customer_id, company_code, invoice_id=invoice_id, limit=25,
@@ -3065,13 +3065,13 @@ def cash_application_agent_queue(customer_id: str | None = None) -> list[dict]:
             ELSE 'EXCEPTION'
         END AS exception_type,
         p.PAYMENT_AMOUNT_USD * (1 + DATEDIFF('day', p.PAYMENT_DATE, CURRENT_DATE()) / 7.0) AS priority_score
-    FROM {BM}.PAYMENT_VW p
-    LEFT JOIN {BM}.CUSTOMER_VW cu
+    FROM {BM}.payment_vw p
+    LEFT JOIN {BM}.customer_vw cu
       ON cu.CUSTOMER_ID = p.CUSTOMER_ID
      AND cu.COMPANY_CODE = p.COMPANY_CODE
     LEFT JOIN (
         SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-        FROM {BM}.CUSTOMER_VW
+        FROM {BM}.customer_vw
         GROUP BY CUSTOMER_ID
     ) cu_any
       ON cu_any.CUSTOMER_ID = p.CUSTOMER_ID
@@ -3105,7 +3105,7 @@ def cash_application_match_candidates(customer_id: str, company_code: str | None
                 WHEN ar.OPEN_AMOUNT_USD > {float(payment_amount)} THEN 'UNDERPAY'
                 ELSE 'OVERPAY'
             END AS match_type
-        FROM {BM}.AR_OPEN_ITEM_VW ar
+        FROM {BM}.ar_open_item_vw ar
         WHERE ar.CUSTOMER_ID = '{safe_cust}' {co_filter}
         ORDER BY amount_delta ASC, ar.DAYS_PAST_DUE DESC
         LIMIT 25
@@ -3122,7 +3122,7 @@ def cash_application_recommendation(payload: dict) -> dict:
         SELECT PAYMENT_ID, CUSTOMER_ID, INVOICE_ID, COMPANY_CODE, PAYMENT_METHOD,
                PAYMENT_AMOUNT_USD, PAYMENT_DATE::VARCHAR AS payment_date,
                CLEARING_DATE, IS_PARTIAL
-        FROM {BM}.PAYMENT_VW
+        FROM {BM}.payment_vw
         WHERE PAYMENT_ID = '{safe_id}'
         LIMIT 1
     """)
@@ -3241,7 +3241,7 @@ def cash_application_apply(payload: dict) -> dict:
 
     pay_rows = run_query(f"""
         SELECT PAYMENT_ID, CUSTOMER_ID, COMPANY_CODE, PAYMENT_AMOUNT_USD, IS_PARTIAL
-        FROM {BM}.PAYMENT_VW
+        FROM {BM}.payment_vw
         WHERE PAYMENT_ID = '{safe_pay}'
         LIMIT 1
     """)
@@ -3255,7 +3255,7 @@ def cash_application_apply(payload: dict) -> dict:
 
     inv_rows = run_query(f"""
         SELECT INVOICE_ID, CUSTOMER_ID, COMPANY_CODE, OPEN_AMOUNT_USD
-        FROM {BM}.AR_OPEN_ITEM_VW
+        FROM {BM}.ar_open_item_vw
         WHERE INVOICE_ID = '{safe_inv}'
         LIMIT 1
     """)
@@ -3327,13 +3327,13 @@ def dispute_agent_queue(customer_id: str | None = None) -> list[dict]:
                 PARTITION BY d.DISPUTE_ID
                 ORDER BY d.DISPUTED_AMOUNT DESC NULLS LAST, d.OPENED_DATE DESC NULLS LAST
             ) AS rn
-        FROM {BM}.DISPUTE_VW d
-        LEFT JOIN {BM}.CUSTOMER_VW cu
+        FROM {BM}.dispute_vw d
+        LEFT JOIN {BM}.customer_vw cu
           ON cu.CUSTOMER_ID = d.CUSTOMER_ID
          AND cu.COMPANY_CODE = d.COMPANY_CODE
         LEFT JOIN (
             SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-            FROM {BM}.CUSTOMER_VW
+            FROM {BM}.customer_vw
             GROUP BY CUSTOMER_ID
         ) cu_any
           ON cu_any.CUSTOMER_ID = d.CUSTOMER_ID
@@ -3367,7 +3367,7 @@ def dispute_agent_recommendation(payload: dict) -> dict:
     rows = run_query(f"""
         SELECT DISPUTE_ID, CUSTOMER_ID, INVOICE_ID, COMPANY_CODE, DISPUTE_REASON,
                DISPUTE_STATUS, DISPUTED_AMOUNT, OPENED_DATE::VARCHAR AS opened_date, OWNER
-        FROM {BM}.DISPUTE_VW
+        FROM {BM}.dispute_vw
         WHERE DISPUTE_ID = '{safe_id}'
         LIMIT 1
     """)
@@ -3384,7 +3384,7 @@ def dispute_agent_recommendation(payload: dict) -> dict:
 
     inv_rows = run_query(f"""
         SELECT INVOICE_ID, GROSS_AMOUNT, INVOICE_STATUS, INVOICE_DATE::VARCHAR AS invoice_date
-        FROM {BM}.AR_INVOICE_VW
+        FROM {BM}.ar_invoice_vw
         WHERE INVOICE_ID = '{invoice_id.replace("'", "''")}'
         LIMIT 1
     """) if invoice_id else []
