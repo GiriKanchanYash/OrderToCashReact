@@ -1999,14 +1999,14 @@ def billing_agent_queue(customer_id: str | None = None) -> list[dict]:
             be.DELIVERY_ID AS delivery_id,
             be.DELIVERY_STATUS AS delivery_status,
             be.GOODS_ISSUE_DATE::VARCHAR AS goods_issue_date,
-            be.BILLING_ELIGIBILITY_STATUS AS billing_eligibility_status,
-            be.BILLING_ELIGIBILITY_REASON AS billing_eligibility_reason,
-            be.BILLING_TRIGGER_TYPE AS billing_trigger_type,
+            be.billing_eligibility_status AS billing_eligibility_status,
+            be.billing_eligibility_reason AS billing_eligibility_reason,
+            be.billing_trigger_type AS billing_trigger_type,
             be.INVOICE_COUNT AS invoice_count,
             be.LAST_INVOICE_DATE::VARCHAR AS last_invoice_date,
             CASE
-                WHEN be.BILLING_ELIGIBILITY_STATUS = 'BLOCKED' THEN 'ACT_NOW'
-                WHEN be.BILLING_ELIGIBILITY_STATUS IN (
+                WHEN be.billing_eligibility_status = 'BLOCKED' THEN 'ACT_NOW'
+                WHEN be.billing_eligibility_status IN (
                     'NO_DELIVERY', 'PENDING_GOODS_ISSUE', 'PENDING_DELIVERY',
                     'PENDING_MILESTONE', 'PENDING_SERVICE_CLOSE', 'PENDING_BILLING_CYCLE'
                 ) THEN 'PLAN_THIS_WEEK'
@@ -2022,7 +2022,7 @@ def billing_agent_queue(customer_id: str | None = None) -> list[dict]:
             GROUP BY CUSTOMER_ID
         ) cu_any
           ON cu_any.CUSTOMER_ID = be.CUSTOMER_ID
-        WHERE be.BILLING_ELIGIBILITY_STATUS != 'ELIGIBLE'
+        WHERE be.billing_eligibility_status != 'ELIGIBLE'
           {cust_filter}
     ),
     ranked AS (
@@ -2265,7 +2265,7 @@ def proactive_dispute_queue() -> list[dict]:
         r.CUSTOMER_ID AS customer_id,
         r.CUSTOMER_NAME AS customer_name,
         r.COMPANY_CODE AS company_code,
-        r.BILLING_TRIGGER_TYPE AS billing_trigger_type,
+        r.billing_trigger_type AS billing_trigger_type,
         r.EXPOSURE_AMOUNT AS exposure_amount,
         r.PREDICTED_DISPUTE_REASON AS predicted_dispute_reason,
         r.RISK_DRIVER AS risk_driver,
@@ -2290,17 +2290,17 @@ def proactive_dispute_queue() -> list[dict]:
                 be.CUSTOMER_ID AS customer_id,
                 be.CUSTOMER_NAME AS customer_name,
                 be.COMPANY_CODE AS company_code,
-                coalesce(be.BILLING_TRIGGER_TYPE, 'DELIVERY_BASED') AS billing_trigger_type,
+                coalesce(be.billing_trigger_type, 'DELIVERY_BASED') AS billing_trigger_type,
                 be.TOTAL_ORDER_VALUE AS exposure_amount,
                 'QUALITY' AS predicted_dispute_reason,
-                be.BILLING_ELIGIBILITY_REASON AS risk_driver,
+                be.billing_eligibility_reason AS risk_driver,
                 array_construct('BILL-ACC-01') AS policy_refs,
                 0.65 AS risk_score,
                 dateadd(day, 14, current_date())::varchar AS predicted_dispute_date,
                 'PLAN_THIS_WEEK' AS action_group,
                 be.TOTAL_ORDER_VALUE * 0.65 AS priority_score
             FROM {BM}.billing_eligibility_vw be
-            WHERE be.BILLING_ELIGIBILITY_STATUS IN ('BLOCKED', 'PENDING_GOODS_ISSUE', 'PENDING_MILESTONE')
+            WHERE be.billing_eligibility_status IN ('BLOCKED', 'PENDING_GOODS_ISSUE', 'PENDING_MILESTONE')
             ORDER BY be.TOTAL_ORDER_VALUE DESC
             LIMIT 25
         """)
