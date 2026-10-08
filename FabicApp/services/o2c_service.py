@@ -364,14 +364,13 @@ def get_filter_options() -> dict:
             ORDER BY CUSTOMER_SEGMENT
         """,
         "dealers": f"""
-            SELECT DISTINCT
+            SELECT DISTINCT TOP 500
                 c.CUSTOMER_ID AS dealer_id,
                 c.CUSTOMER_NAME AS dealer_name
             FROM {BM}.customer_vw c
             INNER JOIN {BM}.sales_order_vw so ON so.CUSTOMER_ID = c.CUSTOMER_ID
             WHERE c.CUSTOMER_NAME IS NOT NULL
             ORDER BY c.CUSTOMER_NAME
-            LIMIT 500
         """,
     })
     companies = q["companies"]
