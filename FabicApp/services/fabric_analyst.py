@@ -64,7 +64,7 @@ def _schema_context() -> str:
             """
             SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
             FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = 'BUSINESS_MART'
+            WHERE UPPER(TABLE_SCHEMA) = 'BUSINESS_MART'
             ORDER BY TABLE_NAME, ORDINAL_POSITION
             """
         )
@@ -117,7 +117,7 @@ def call_analyst(instruction: str, question: str) -> dict:
             "Warehouse T-SQL SELECT statement.\n\n"
             f"{schema}\n\n"
             "Rules:\n"
-            "- Use only the views listed above, fully qualified exactly as shown.\n"
+            "- Use only the views listed above, fully qualified exactly as shown (names are case-sensitive).\n"
             "- T-SQL only: TOP (n) not LIMIT, IIF/CASE not IFF, CAST(GETDATE() AS DATE) for today, "
             "DATEADD/DATEDIFF/DATETRUNC for dates. Never GROUP BY ordinal or alias.\n"
             f"- Return at most {MAX_ROWS} rows. Prefer readable names (CUSTOMER_NAME) next to IDs.\n"

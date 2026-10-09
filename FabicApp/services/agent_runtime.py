@@ -20,7 +20,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any
 
-from FabicApp.db import DB, get_connection, run_query
+from FabicApp.db import DB, LK_AGENT, get_connection, run_query
 from FabicApp.services import azure_llm, fabric_analyst
 
 log = logging.getLogger(__name__)
@@ -230,7 +230,7 @@ def _search_policies_kb(query: str, policy_domain: str | None, limit: int) -> li
             POLICY_AREA AS policy_area,
             POLICY_TITLE AS policy_title,
             POLICY_TEXT AS policy_text
-        FROM {DB}.{O2C_AGENT_SCHEMA}.POLICY_KB
+        FROM {LK_AGENT}.policy_kb
         WHERE (EFFECTIVE_TO IS NULL OR EFFECTIVE_TO >= CURRENT_DATE())
         {domain_clause}
     """)

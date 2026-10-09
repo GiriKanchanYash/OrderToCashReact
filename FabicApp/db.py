@@ -14,6 +14,9 @@ Connection settings (.env):
   FABRIC_WAREHOUSE_SERVER / FABRIC_WAREHOUSE_DATABASE   (O2C warehouse, preferred)
   FABRIC_SQL_SERVER / FABRIC_DATABASE                   (fallback)
   FABRIC_SCHEMA            default INFORMATION_MART (app tables: SAVED_INSIGHTS, ...)
+  FABRIC_LAKEHOUSE_DATABASE  default OrderToCash_LK (lakehouse holding raw_vault,
+                             information_mart, o2c_agent tables; queried with
+                             three-part names over the same SQL endpoint)
   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET (service principal)
 """
 from __future__ import annotations
@@ -132,6 +135,14 @@ DB = DATABASE
 SCHEMA = _P["schema"] or "INFORMATION_MART"
 BM = f"{DB}.business_mart"
 IM = SCHEMA
+
+# Lakehouse tables (raw_vault / information_mart / o2c_agent) live in a separate
+# Fabric Lakehouse in the same workspace, so they are referenced with
+# three-part names (cross-database query) from the warehouse connection.
+LAKEHOUSE = os.getenv("FABRIC_LAKEHOUSE_DATABASE", "").strip().strip('"') or "OrderToCash_LK"
+LK_IM = f"{LAKEHOUSE}.information_mart"
+LK_RV = f"{LAKEHOUSE}.raw_vault"
+LK_AGENT = f"{LAKEHOUSE}.o2c_agent"
 
 
 def _build_conn_string(p: dict[str, str]) -> str:

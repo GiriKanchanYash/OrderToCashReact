@@ -1388,7 +1388,7 @@ def get_weekly_metrics(
     base_mape = float(base.get("MAPE") or base.get("mape") or 12)
 
     ar_snap = run_query(f"""
-        select count(*) as open_cnt, sum(open_amount_usd) as open_amt
+        select count(*) as open_cnt, sum(OPEN_AMOUNT_USD) as open_amt
         from {BM}.ar_open_item_vw ar
         where 1=1 {cf_ar}{df_ar}
     """)
@@ -1670,7 +1670,7 @@ def _fetch_customer_reliability_raw(
     if segment:
         clauses.append(f"CUSTOMER_SEGMENT = '{segment.replace(chr(39), chr(39)+chr(39))}'")
     if risk_band:
-        clauses.append(f"CUSTOMER_RISK_BAND = '{risk_band.replace(chr(39), chr(39)+chr(39))}'")
+        clauses.append(f"customer_risk_band = '{risk_band.replace(chr(39), chr(39)+chr(39))}'")
 
     sql = f"""
     SELECT

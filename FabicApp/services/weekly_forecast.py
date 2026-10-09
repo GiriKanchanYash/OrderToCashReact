@@ -118,7 +118,7 @@ def build_daily_facts_sql(
                 ROW_NUMBER() OVER (PARTITION BY CUSTOMER_ID, COMPANY_CODE
                                    ORDER BY DATEDIFF(day, DUE_DATE, CLEARING_DATE)) as rn,
                 COUNT(*) OVER (PARTITION BY CUSTOMER_ID, COMPANY_CODE) as cnt
-            from {BM}.AR_CLEARED_ITEM_VW
+            from {BM}.ar_cleared_item_vw
             where DUE_DATE is not null
               and CLEARING_DATE is not null
         ),
@@ -164,7 +164,7 @@ def build_daily_facts_sql(
                     0
                 ) as pay_offset_days,
                 COALESCE(cpb.hist_cnt, 0) as hist_cnt
-            from {BM}.AR_OPEN_ITEM_VW ar
+            from {BM}.ar_open_item_vw ar
             left join customer_pay_behavior cpb
               on cpb.CUSTOMER_ID = ar.CUSTOMER_ID
              and cpb.COMPANY_CODE = ar.COMPANY_CODE
@@ -226,70 +226,70 @@ def build_daily_facts_sql(
             group by s.metric_date
         ),
         revenue as (
-            select CAST(inv.invoice_date AS DATE) as d, SUM(inv.gross_amount) as v
-            from {BM}.AR_INVOICE_VW inv
-            where inv.invoice_date between {rs} and {re_} {cf}{df}
-            group by CAST(inv.invoice_date AS DATE)
+            select CAST(inv.INVOICE_DATE AS DATE) as d, SUM(inv.GROSS_AMOUNT) as v
+            from {BM}.ar_invoice_vw inv
+            where inv.INVOICE_DATE between {rs} and {re_} {cf}{df}
+            group by CAST(inv.INVOICE_DATE AS DATE)
         ),
         collections_actual as (
-            select CAST(p.payment_date AS DATE) as d, SUM(p.payment_amount_usd) as v
-            from {BM}.PAYMENT_VW p
-            where p.payment_date between {rs} and {re_} {cf_pay}{df_pay}
-            group by CAST(p.payment_date AS DATE)
+            select CAST(p.PAYMENT_DATE AS DATE) as d, SUM(p.PAYMENT_AMOUNT_USD) as v
+            from {BM}.payment_vw p
+            where p.PAYMENT_DATE between {rs} and {re_} {cf_pay}{df_pay}
+            group by CAST(p.PAYMENT_DATE AS DATE)
         ),
         invoices_day as (
-            select CAST(inv.invoice_date AS DATE) as d, COUNT(*) as v
-            from {BM}.AR_INVOICE_VW inv
-            where inv.invoice_date between {rs} and {re_} {cf}{df}
-            group by CAST(inv.invoice_date AS DATE)
+            select CAST(inv.INVOICE_DATE AS DATE) as d, COUNT(*) as v
+            from {BM}.ar_invoice_vw inv
+            where inv.INVOICE_DATE between {rs} and {re_} {cf}{df}
+            group by CAST(inv.INVOICE_DATE AS DATE)
         ),
         disputes_opened as (
-            select CAST(d.opened_date AS DATE) as d, COUNT(*) as v
-            from {BM}.DISPUTE_VW d
-            where d.opened_date between {rs} and {re_}
-            group by CAST(d.opened_date AS DATE)
+            select CAST(d.OPENED_DATE AS DATE) as d, COUNT(*) as v
+            from {BM}.dispute_vw d
+            where d.OPENED_DATE between {rs} and {re_}
+            group by CAST(d.OPENED_DATE AS DATE)
         ),
         disputes_open as (
             select s.metric_date as d, COUNT(*) as v
             from spine s
-            join {BM}.DISPUTE_VW d
-              on d.opened_date <= s.metric_date
-             and COALESCE(d.resolved_date, CAST('9999-12-31' AS DATE)) > s.metric_date
+            join {BM}.dispute_vw d
+              on d.OPENED_DATE <= s.metric_date
+             and COALESCE(d.RESOLVED_DATE, CAST('9999-12-31' AS DATE)) > s.metric_date
             group by s.metric_date
         ),
         unapplied as (
-            select CAST(p.payment_date AS DATE) as d, SUM(p.payment_amount_usd) as v
-            from {BM}.PAYMENT_VW p
-            where p.clearing_date is null
-              and p.payment_date between {rs} and {re_} {cf_pay}{df_pay}
-            group by CAST(p.payment_date AS DATE)
+            select CAST(p.PAYMENT_DATE AS DATE) as d, SUM(p.PAYMENT_AMOUNT_USD) as v
+            from {BM}.payment_vw p
+            where p.CLEARING_DATE is null
+              and p.PAYMENT_DATE between {rs} and {re_} {cf_pay}{df_pay}
+            group by CAST(p.PAYMENT_DATE AS DATE)
         ),
         short_pay as (
-            select CAST(p.payment_date AS DATE) as d, COUNT(*) as v
-            from {BM}.PAYMENT_VW p
-            where {_truthy('p.is_partial')}
-              and p.payment_date between {rs} and {re_} {cf_pay}{df_pay}
-            group by CAST(p.payment_date AS DATE)
+            select CAST(p.PAYMENT_DATE AS DATE) as d, COUNT(*) as v
+            from {BM}.payment_vw p
+            where {_truthy('p.IS_PARTIAL')}
+              and p.PAYMENT_DATE between {rs} and {re_} {cf_pay}{df_pay}
+            group by CAST(p.PAYMENT_DATE AS DATE)
         ),
         payments_cleared as (
-            select CAST(p.clearing_date AS DATE) as d, SUM(p.payment_amount_usd) as v, COUNT(*) as cnt
-            from {BM}.PAYMENT_VW p
-            where p.clearing_date between {rs} and {re_} {cf_pay}{df_pay}
-            group by CAST(p.clearing_date AS DATE)
+            select CAST(p.CLEARING_DATE AS DATE) as d, SUM(p.PAYMENT_AMOUNT_USD) as v, COUNT(*) as cnt
+            from {BM}.payment_vw p
+            where p.CLEARING_DATE between {rs} and {re_} {cf_pay}{df_pay}
+            group by CAST(p.CLEARING_DATE AS DATE)
         ),
         disputes_resolved as (
-            select CAST(d.resolved_date AS DATE) as d,
-                   AVG(CAST(DATEDIFF(day, d.opened_date, d.resolved_date) AS FLOAT)) as avg_days,
+            select CAST(d.RESOLVED_DATE AS DATE) as d,
+                   AVG(CAST(DATEDIFF(day, d.OPENED_DATE, d.RESOLVED_DATE) AS FLOAT)) as avg_days,
                    COUNT(*) as cnt
-            from {BM}.DISPUTE_VW d
-            where d.resolved_date between {rs} and {re_}
-            group by CAST(d.resolved_date AS DATE)
+            from {BM}.dispute_vw d
+            where d.RESOLVED_DATE between {rs} and {re_}
+            group by CAST(d.RESOLVED_DATE AS DATE)
         ),
         ptp as (
-            select CAST(ptp.promise_date AS DATE) as d, COUNT(*) as v
-            from {BM}.PTP_VW ptp
-            where ptp.promise_date between {rs} and {re_}
-            group by CAST(ptp.promise_date AS DATE)
+            select CAST(ptp.PROMISE_DATE AS DATE) as d, COUNT(*) as v
+            from {BM}.ptp_vw ptp
+            where ptp.PROMISE_DATE between {rs} and {re_}
+            group by CAST(ptp.PROMISE_DATE AS DATE)
         ),
         {blocked_join}
         {risk_join}

@@ -179,10 +179,24 @@ def _is_inner_select(select: exp.Select) -> bool:
     return False
 
 
+def _fix_distinct_null_ordering(select: exp.Select) -> None:
+    """SELECT DISTINCT ... ORDER BY x: sqlglot emulates Snowflake's NULLS LAST
+    by adding 'CASE WHEN x IS NULL ...' to the ORDER BY, which T-SQL rejects
+    with DISTINCT (error 145: ORDER BY items must appear in the select list).
+    Use T-SQL's native null placement instead; non-null ordering is unchanged."""
+    order = select.args.get("order")
+    if not (select.args.get("distinct") and order):
+        return
+    for ordered in order.expressions:
+        if isinstance(ordered, exp.Ordered):
+            ordered.set("nulls_first", not ordered.args.get("desc"))
+
+
 def _structural_fixes(tree: exp.Expression) -> None:
     alias_n = 0
     for select in list(tree.find_all(exp.Select)):
         _fix_group_by(select)
+        _fix_distinct_null_ordering(select)
         # ORDER BY inside CTE / subquery without a row limit is invalid T-SQL.
         if select.args.get("order") and not (select.args.get("limit") or select.args.get("offset")) and _is_inner_select(select):
             select.set("order", None)

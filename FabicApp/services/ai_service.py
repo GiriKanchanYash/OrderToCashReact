@@ -13,7 +13,7 @@ import uuid
 
 import requests
 
-from FabicApp.db import BM, DB, SCHEMA, get_connection, promote_staging_to_mart, run_query, run_query_on_conn
+from FabicApp.db import BM, DB, LK_AGENT, LK_IM, LK_RV, SCHEMA, get_connection, promote_staging_to_mart, run_query, run_query_on_conn
 from FabicApp.services import azure_llm, fabric_analyst
 from FabicApp.services.billing_block_catalog import billing_problem_summary, block_scenario_lines
 from FabicApp.services.agent_response_format import (
@@ -160,7 +160,7 @@ def save_question_history(question: str, qtype: str = "custom") -> None:
     try:
         safe_q = question.replace("'", "''")
         run_query(f"""
-            MERGE INTO {DB}.{SCHEMA}.GENIE_QUESTION_HISTORY t
+            MERGE INTO {LK_IM}.genie_question_history t
             USING (SELECT '{safe_q}' AS NORMALIZED_QUERY, '{qtype}' AS TYPE, '{user}' AS "USER", 'ORDERLENS' AS PERSONA) s
             ON t.NORMALIZED_QUERY = s.NORMALIZED_QUERY AND t."USER" = s."USER"
             WHEN MATCHED THEN UPDATE SET FREQUENCY = t.FREQUENCY + 1, LAST_ASKED_AT = CURRENT_TIMESTAMP(), PERSONA = 'ORDERLENS'
@@ -176,7 +176,7 @@ def load_saved_insights() -> list[dict]:
     try:
         return run_query(f"""
             SELECT INSIGHT_ID, TITLE, QUESTION, SQL_TEXT
-            FROM {DB}.{SCHEMA}.SAVED_INSIGHTS
+            FROM {LK_IM}.saved_insights
             WHERE CREATED_BY = '{user}'
               AND PAGE IN ('{_COPILOT_PAGE}', 'copilot')
             ORDER BY CREATED_AT DESC
@@ -194,7 +194,7 @@ def save_insight(title: str, question: str, sql_text: str = "") -> None:
         safe_q = question.replace("'", "''")
         safe_sql = sql_text.replace("'", "''") if sql_text else ""
         run_query(f"""
-            INSERT INTO {DB}.{SCHEMA}.SAVED_INSIGHTS (CREATED_BY, PAGE, TITLE, QUESTION, SQL_TEXT)
+            INSERT INTO {LK_IM}.saved_insights (CREATED_BY, PAGE, TITLE, QUESTION, SQL_TEXT)
             VALUES ('{user}', '{_COPILOT_PAGE}', '{safe_title}', '{safe_q}', '{safe_sql}')
         """)
     except Exception:
@@ -204,7 +204,7 @@ def save_insight(title: str, question: str, sql_text: str = "") -> None:
 def delete_insight(insight_id: int) -> None:
     user = get_current_user()
     try:
-        run_query(f"DELETE FROM {DB}.{SCHEMA}.SAVED_INSIGHTS WHERE INSIGHT_ID = {insight_id} AND CREATED_BY = '{user}'")
+        run_query(f"DELETE FROM {LK_IM}.saved_insights WHERE INSIGHT_ID = {insight_id} AND CREATED_BY = '{user}'")
     except Exception:
         log.warning("Could not delete insight", exc_info=True)
 
@@ -214,7 +214,7 @@ def load_frequent_questions() -> list[dict]:
     try:
         return run_query(f"""
             SELECT NORMALIZED_QUERY, TYPE, FREQUENCY
-            FROM {DB}.{SCHEMA}.GENIE_QUESTION_HISTORY
+            FROM {LK_IM}.genie_question_history
             WHERE "USER" = '{user}'
               AND (PERSONA = 'ORDERLENS' OR PERSONA IS NULL)
               AND {_COPILOT_HISTORY_FILTER}
@@ -230,7 +230,7 @@ def load_most_frequent_all() -> list[dict]:
     try:
         return run_query(f"""
             SELECT NORMALIZED_QUERY, TYPE, SUM(FREQUENCY) AS TOTAL_FREQ
-            FROM {DB}.{SCHEMA}.GENIE_QUESTION_HISTORY
+            FROM {LK_IM}.genie_question_history
             WHERE (PERSONA = 'ORDERLENS' OR PERSONA IS NULL)
               AND {_COPILOT_HISTORY_FILTER}
             GROUP BY NORMALIZED_QUERY, TYPE
@@ -585,7 +585,7 @@ def _copilot_policy_answer(
         "sql": "",
         "descriptive": "No matching O2C policy records were found for this question.",
         "prescriptive": (
-            f"Load the O2C policies into {DB}.O2C_AGENT.POLICY_KB in the Fabric warehouse, then retry."
+            f"Load the O2C policies into {LK_AGENT}.policy_kb in the Fabric lakehouse, then retry."
         ),
         "response_mode": "policy",
         "agent_used": False,
@@ -1720,7 +1720,7 @@ def _agent_entity_context(
             ca.INVOICE_ID,
             s.NOTES
         FROM {BM}.collection_activity_vw ca
-        LEFT JOIN {DB}.raw_vault.collection_activity s
+        LEFT JOIN {LK_RV}.collection_activity s
           ON s.ACTIVITY_ID = ca.ACTIVITY_ID
         WHERE ca.CUSTOMER_ID = '{safe_id}' {co_filter}{contact_filter}
         ORDER BY ca.ACTIVITY_DATE DESC NULLS LAST
@@ -2002,8 +2002,8 @@ def billing_agent_queue(customer_id: str | None = None) -> list[dict]:
             be.billing_eligibility_status AS billing_eligibility_status,
             be.billing_eligibility_reason AS billing_eligibility_reason,
             be.billing_trigger_type AS billing_trigger_type,
-            be.INVOICE_COUNT AS invoice_count,
-            be.LAST_INVOICE_DATE::VARCHAR AS last_invoice_date,
+            be.invoice_count AS invoice_count,
+            be.last_invoice_date::VARCHAR AS last_invoice_date,
             CASE
                 WHEN be.billing_eligibility_status = 'BLOCKED' THEN 'ACT_NOW'
                 WHEN be.billing_eligibility_status IN (
@@ -2223,13 +2223,13 @@ def billing_agent_mark_reviewed(payload: dict) -> dict:
     try:
         seq_rows = run_query(f"""
             SELECT COALESCE(MAX(STATUS_SEQ), 0) + 1 AS next_seq
-            FROM {DB}.raw_vault.order_status_history
+            FROM {LK_RV}.order_status_history
             WHERE SALES_ORDER_ID = '{safe_so}'
         """)
         next_seq = int(seq_rows[0].get("next_seq") or seq_rows[0].get("NEXT_SEQ") or 1)
 
         run_execute(f"""
-            INSERT INTO {DB}.raw_vault.order_status_history (
+            INSERT INTO {LK_RV}.order_status_history (
                 STATUS_EVENT_ID, SALES_ORDER_ID, CUSTOMER_ID, COMPANY_CODE, STATUS_SEQ,
                 LIFECYCLE_AREA, ORDER_STATUS, STATUS_DATE, STATUS_TIMESTAMP, CHANGED_BY,
                 IS_LATEST_STATUS, NOTES, CREATED_AT, UPDATED_AT, SOURCE_SYSTEM
@@ -2259,23 +2259,23 @@ def proactive_dispute_queue() -> list[dict]:
 
     sql = f"""
     SELECT
-        r.RISK_ID AS risk_id,
-        r.INVOICE_ID AS invoice_id,
-        r.SALES_ORDER_ID AS sales_order_id,
-        r.CUSTOMER_ID AS customer_id,
-        r.CUSTOMER_NAME AS customer_name,
-        r.COMPANY_CODE AS company_code,
+        r.risk_id AS risk_id,
+        r.invoice_id AS invoice_id,
+        r.sales_order_id AS sales_order_id,
+        r.customer_id AS customer_id,
+        r.customer_name AS customer_name,
+        r.company_code AS company_code,
         r.billing_trigger_type AS billing_trigger_type,
-        r.EXPOSURE_AMOUNT AS exposure_amount,
-        r.PREDICTED_DISPUTE_REASON AS predicted_dispute_reason,
-        r.RISK_DRIVER AS risk_driver,
-        r.POLICY_REFS AS policy_refs,
-        r.RISK_SCORE AS risk_score,
-        r.PREDICTED_DISPUTE_DATE::VARCHAR AS predicted_dispute_date,
-        r.ACTION_GROUP AS action_group,
-        r.PRIORITY_SCORE AS priority_score
+        r.exposure_amount AS exposure_amount,
+        r.predicted_dispute_reason AS predicted_dispute_reason,
+        r.risk_driver AS risk_driver,
+        r.policy_refs AS policy_refs,
+        r.risk_score AS risk_score,
+        r.predicted_dispute_date::VARCHAR AS predicted_dispute_date,
+        r.action_group AS action_group,
+        r.priority_score AS priority_score
     FROM {BM}.proactive_dispute_risk_vw r
-    ORDER BY r.PRIORITY_SCORE DESC
+    ORDER BY r.priority_score DESC
     LIMIT 50
     """
     try:
@@ -2782,7 +2782,7 @@ def collections_agent_log_ptp(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            INSERT INTO {DB}.raw_vault.collection_activity (
+            INSERT INTO {LK_RV}.collection_activity (
                 ACTIVITY_ID, CUSTOMER_ID, COMPANY_CODE, ACTIVITY_TYPE, ACTIVITY_DATE,
                 CONTACT_OUTCOME, IS_RIGHT_PARTY_CONTACT, NOTES, SOURCE_SYSTEM
             )
@@ -2794,7 +2794,7 @@ def collections_agent_log_ptp(payload: dict) -> dict:
 
         invoice_sql = f"'{safe_invoice}'" if safe_invoice else "NULL"
         run_execute(f"""
-            INSERT INTO {DB}.raw_vault.promised_to_pay (
+            INSERT INTO {LK_RV}.promise_to_pay (
                 PTP_ID, CUSTOMER_ID, COMPANY_CODE, INVOICE_ID, ACTIVITY_ID,
                 PROMISE_DATE, PROMISED_PAY_DATE, PROMISED_AMOUNT, CURRENCY_CODE,
                 PTP_STATUS, IS_KEPT, SOURCE_SYSTEM
@@ -3014,7 +3014,7 @@ def collections_agent_mark_contacted(payload: dict) -> dict:
 
     try:
         run_query(f"""
-            INSERT INTO {DB}.raw_vault.collection_activity (
+            INSERT INTO {LK_RV}.collection_activity (
                 ACTIVITY_ID, CUSTOMER_ID, COMPANY_CODE, ACTIVITY_TYPE, ACTIVITY_DATE,
                 CONTACT_OUTCOME, IS_RIGHT_PARTY_CONTACT, NOTES, SOURCE_SYSTEM
             )
@@ -3273,7 +3273,7 @@ def cash_application_apply(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {DB}.raw_vault.payment
+            UPDATE {LK_RV}.payment
             SET INVOICE_ID = '{safe_inv}',
                 CLEARING_DATE = CURRENT_DATE(),
                 IS_PARTIAL = {str(is_partial).upper()},
@@ -3518,7 +3518,7 @@ def dispute_agent_update_status(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {DB}.raw_vault.dispute_case
+            UPDATE {LK_RV}.dispute_case
             SET DISPUTE_STATUS = '{new_status}',
                 OWNER = COALESCE(OWNER, 'OrderToCash Agent'),
                 UPDATED_AT = CURRENT_TIMESTAMP()
@@ -3550,7 +3550,7 @@ def dispute_agent_resolve(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {DB}.raw_vault.dispute_case
+            UPDATE {LK_RV}.dispute_case
             SET DISPUTE_STATUS = '{status}',
                 RESOLVED_AMOUNT = {resolved_amount},
                 RESOLVED_DATE = CURRENT_DATE(),
