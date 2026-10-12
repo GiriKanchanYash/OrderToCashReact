@@ -6,9 +6,10 @@ DB, SCHEMA, BM, get_connection(), run_query(), run_query_on_conn(),
 run_execute(), promote_staging_to_mart() -- so the Fabric services in
 FabicApp/services mirror the Snowflake services call-for-call.
 
-Queries written in the Snowflake dialect are translated to T-SQL by
-FabicApp/sql_dialect.py before execution. Hand-written T-SQL uses
-run_tsql()/run_tsql_on_conn(), which skip translation.
+All queries in FabicApp/services are written in native Fabric T-SQL ('?'
+parameter placeholders) and are executed as-is: run_query()/run_query_on_conn()
+and run_tsql()/run_tsql_on_conn() are equivalent; run_query keeps the name
+used by the Snowflake reference layer so the services stay call-compatible.
 
 Connection settings (.env):
   FABRIC_WAREHOUSE_SERVER / FABRIC_WAREHOUSE_DATABASE   (O2C warehouse, preferred)
@@ -33,8 +34,6 @@ import pyodbc
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import ClientSecretCredential
 from dotenv import load_dotenv
-
-from FabicApp.sql_dialect import to_tsql
 
 logger = logging.getLogger("o2c.fabric.db")
 
@@ -248,9 +247,9 @@ def run_tsql(sql: str, params: tuple | None = None) -> list[dict]:
 
 
 def run_query_on_conn(conn, sql: str, params: tuple | None = None) -> list[dict]:
-    """Same contract as app.db.run_query_on_conn: Snowflake-dialect SQL with
-    %s placeholders in, lower-cased dict rows out."""
-    return _execute_on_conn(conn, to_tsql(sql), params)
+    """Same contract as app.db.run_query_on_conn: native T-SQL with '?'
+    placeholders in, lower-cased dict rows out."""
+    return _execute_on_conn(conn, sql, params)
 
 
 def run_query(sql: str, params: tuple | None = None) -> list[dict]:
@@ -263,7 +262,7 @@ def run_execute(sql: str, params: tuple | None = None) -> None:
     with get_connection() as conn:
         cur = conn.cursor()
         try:
-            cur.execute(to_tsql(sql), params or ())
+            cur.execute(sql, params or ())
         finally:
             cur.close()
 

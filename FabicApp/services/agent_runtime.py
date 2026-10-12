@@ -225,14 +225,16 @@ def _search_policies_kb(query: str, policy_domain: str | None, limit: int) -> li
     domain_clause = f"AND POLICY_DOMAIN = '{domain}'" if domain else ""
     rows = run_query(f"""
         SELECT
-            POLICY_ID AS policy_id,
-            POLICY_DOMAIN AS policy_domain,
-            POLICY_AREA AS policy_area,
-            POLICY_TITLE AS policy_title,
-            POLICY_TEXT AS policy_text
+          POLICY_ID AS policy_id,
+          POLICY_DOMAIN AS policy_domain,
+          POLICY_AREA AS policy_area,
+          POLICY_TITLE AS policy_title,
+          POLICY_TEXT AS policy_text
         FROM {LK_AGENT}.policy_kb
-        WHERE (EFFECTIVE_TO IS NULL OR EFFECTIVE_TO >= CURRENT_DATE())
-        {domain_clause}
+        WHERE
+          (
+            EFFECTIVE_TO IS NULL OR EFFECTIVE_TO >= CAST(GETDATE() AS DATE)
+          ) {domain_clause}
     """)
     if not rows:
         return []

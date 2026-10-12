@@ -188,33 +188,41 @@ def _scoped_prior_kpis(
     inv_from = _scoped_invoice_from(dealer_id, date_from, date_to)
 
     past_due = run_query(f"""
-        SELECT SUM(ar.OPEN_AMOUNT_USD) AS total_ar,
-               SUM(IFF(ar.DAYS_PAST_DUE > 0, ar.OPEN_AMOUNT_USD, 0)) AS past_due_ar
+        SELECT
+          SUM(ar.OPEN_AMOUNT_USD) AS total_ar,
+          SUM(IIF(ar.DAYS_PAST_DUE > 0, ar.OPEN_AMOUNT_USD, 0)) AS past_due_ar
         {ar_from}
     """)
     add_row = run_query(f"""
-        SELECT AVG(ar.DAYS_PAST_DUE) AS add_val
+        SELECT
+          AVG(CAST(ar.DAYS_PAST_DUE AS FLOAT)) AS add_val
         {ar_from} AND ar.DAYS_PAST_DUE > 0
     """)
     inv_90 = run_query(f"""
-        SELECT SUM(inv.GROSS_AMOUNT) AS invoiced_90d
-        {inv_from} AND inv.INVOICE_DATE >= DATEADD(day, -90, CURRENT_DATE())
+        SELECT
+          SUM(inv.GROSS_AMOUNT) AS invoiced_90d
+        {inv_from} AND inv.INVOICE_DATE >= DATEADD(DAY, -90, CAST(GETDATE() AS DATE))
     """)
     cei_row = run_query(f"""
-        SELECT 100 * SUM(IFF(UPPER(inv.INVOICE_STATUS) = 'PAID', inv.GROSS_AMOUNT, 0))
-                   / NULLIF(SUM(inv.GROSS_AMOUNT), 0) AS cei
+        SELECT
+          CAST(100 * SUM(IIF(UPPER(inv.INVOICE_STATUS) = 'PAID', inv.GROSS_AMOUNT, 0)) AS FLOAT) / NULLIF(SUM(inv.GROSS_AMOUNT), 0) AS cei
         {inv_from} AND inv.INVOICE_DATE IS NOT NULL
     """)
     ar_pct_row = run_query(f"""
-        SELECT 100 * SUM(ar.OPEN_AMOUNT_USD) / NULLIF(SUM(so.TOTAL_ORDER_VALUE), 0) AS ar_pct
+        SELECT
+          CAST(100 * SUM(ar.OPEN_AMOUNT_USD) AS FLOAT) / NULLIF(SUM(so.TOTAL_ORDER_VALUE), 0) AS ar_pct
         {ar_from}
     """)
     forecast = run_query(f"""
-        SELECT AVG(f.MAPE) AS mape
-        FROM {BM}.forecast_accuracy_vw f
-        WHERE f.COMPANY_CODE IN (
-            SELECT DISTINCT inv.COMPANY_CODE {inv_from} AND inv.COMPANY_CODE IS NOT NULL
-        )
+        SELECT
+          AVG(CAST(f.MAPE AS FLOAT)) AS mape
+        FROM {BM}.forecast_accuracy_vw AS f
+        WHERE
+          f.COMPANY_CODE IN (
+            SELECT DISTINCT
+              inv.COMPANY_CODE
+            {inv_from} AND inv.COMPANY_CODE IS NOT NULL
+          )
     """)
 
     pd = past_due[0] if past_due else {}
@@ -296,10 +304,10 @@ def _date_filter(date_from: str | None, date_to: str | None, col: str = "ORDER_D
     parts = []
     if date_from:
         safe = date_from.replace("'", "''")[:10]
-        parts.append(f" AND {col} >= '{safe}'::DATE")
+        parts.append(f" AND {col} >= CAST('{safe}' AS DATE)")
     if date_to:
         safe = date_to.replace("'", "''")[:10]
-        parts.append(f" AND {col} <= '{safe}'::DATE")
+        parts.append(f" AND {col} <= CAST('{safe}' AS DATE)")
     return "".join(parts)
 
 
@@ -352,25 +360,35 @@ def get_filter_options() -> dict:
 
     q = _run_queries_parallel({
         "companies": f"""
-            SELECT DISTINCT COMPANY_CODE
+            SELECT DISTINCT
+              COMPANY_CODE
             FROM {BM}.sales_order_vw
-            WHERE COMPANY_CODE IS NOT NULL
-            ORDER BY COMPANY_CODE
+            WHERE
+              COMPANY_CODE IS NOT NULL
+            ORDER BY
+              COMPANY_CODE
         """,
         "segments": f"""
-            SELECT DISTINCT CUSTOMER_SEGMENT
+            SELECT DISTINCT
+              CUSTOMER_SEGMENT
             FROM {BM}.customer_vw
-            WHERE CUSTOMER_SEGMENT IS NOT NULL
-            ORDER BY CUSTOMER_SEGMENT
+            WHERE
+              CUSTOMER_SEGMENT IS NOT NULL
+            ORDER BY
+              CUSTOMER_SEGMENT
         """,
         "dealers": f"""
-            SELECT DISTINCT TOP 500
-                c.CUSTOMER_ID AS dealer_id,
-                c.CUSTOMER_NAME AS dealer_name
-            FROM {BM}.customer_vw c
-            INNER JOIN {BM}.sales_order_vw so ON so.CUSTOMER_ID = c.CUSTOMER_ID
-            WHERE c.CUSTOMER_NAME IS NOT NULL
-            ORDER BY c.CUSTOMER_NAME
+            SELECT DISTINCT
+            TOP 500
+              c.CUSTOMER_ID AS dealer_id,
+              c.CUSTOMER_NAME AS dealer_name
+            FROM {BM}.customer_vw AS c
+            INNER JOIN {BM}.sales_order_vw AS so
+              ON so.CUSTOMER_ID = c.CUSTOMER_ID
+            WHERE
+              c.CUSTOMER_NAME IS NOT NULL
+            ORDER BY
+              c.CUSTOMER_NAME
         """,
     })
     companies = q["companies"]
@@ -423,98 +441,107 @@ def get_summary(
 
         past_due = run_query(f"""
             SELECT
-                SUM(ar.OPEN_AMOUNT_USD) AS total_ar,
-                SUM(IFF(ar.DAYS_PAST_DUE > 0, ar.OPEN_AMOUNT_USD, 0)) AS past_due_ar,
-                SUM(IFF(ar.AGING_BUCKET = '1-30', ar.OPEN_AMOUNT_USD, 0)) AS bucket_1_30,
-                SUM(IFF(ar.AGING_BUCKET = '31-60', ar.OPEN_AMOUNT_USD, 0)) AS bucket_31_60,
-                SUM(IFF(ar.AGING_BUCKET = '61-90', ar.OPEN_AMOUNT_USD, 0)) AS bucket_61_90,
-                SUM(IFF(ar.AGING_BUCKET = '90+', ar.OPEN_AMOUNT_USD, 0)) AS bucket_90_plus
+              SUM(ar.OPEN_AMOUNT_USD) AS total_ar,
+              SUM(IIF(ar.DAYS_PAST_DUE > 0, ar.OPEN_AMOUNT_USD, 0)) AS past_due_ar,
+              SUM(IIF(ar.AGING_BUCKET = '1-30', ar.OPEN_AMOUNT_USD, 0)) AS bucket_1_30,
+              SUM(IIF(ar.AGING_BUCKET = '31-60', ar.OPEN_AMOUNT_USD, 0)) AS bucket_31_60,
+              SUM(IIF(ar.AGING_BUCKET = '61-90', ar.OPEN_AMOUNT_USD, 0)) AS bucket_61_90,
+              SUM(IIF(ar.AGING_BUCKET = '90+', ar.OPEN_AMOUNT_USD, 0)) AS bucket_90_plus
             {ar_from}
         """)
 
         add_row = run_query(f"""
-            SELECT AVG(ar.DAYS_PAST_DUE) AS add_val
-            {ar_from}
-              AND ar.DAYS_PAST_DUE > 0
+            SELECT
+              AVG(CAST(ar.DAYS_PAST_DUE AS FLOAT)) AS add_val
+            {ar_from} AND ar.DAYS_PAST_DUE > 0
         """)
 
         inv_90 = run_query(f"""
-            SELECT SUM(inv.GROSS_AMOUNT) AS invoiced_90d
-            {inv_from}
-              AND inv.INVOICE_DATE >= DATEADD(day, -90, CURRENT_DATE())
+            SELECT
+              SUM(inv.GROSS_AMOUNT) AS invoiced_90d
+            {inv_from} AND inv.INVOICE_DATE >= DATEADD(DAY, -90, CAST(GETDATE() AS DATE))
         """)
 
         dso_rows = run_query(f"""
             SELECT
-                DATE_TRUNC('month', inv.INVOICE_DATE)::VARCHAR AS period,
-                AVG(GREATEST(ar.DAYS_PAST_DUE, 0) + COALESCE(ar.PAYMENT_TERM_DAYS, 30)) AS dso
-            {ar_from}
-              AND inv.INVOICE_DATE IS NOT NULL
-            GROUP BY 1
-            ORDER BY 1 DESC
-            LIMIT 12
+            TOP 12
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23) AS period,
+              AVG(
+                CAST(GREATEST(ar.DAYS_PAST_DUE, 0) + COALESCE(ar.PAYMENT_TERM_DAYS, 30) AS FLOAT)
+              ) AS dso
+            {ar_from} AND inv.INVOICE_DATE IS NOT NULL
+            GROUP BY
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23)
+            ORDER BY
+              1 DESC
         """)
         dso_rows.reverse()
 
         cei_rows = run_query(f"""
             SELECT
-                DATE_TRUNC('month', inv.INVOICE_DATE)::VARCHAR AS period,
-                100 * SUM(IFF(UPPER(inv.INVOICE_STATUS) = 'PAID', inv.GROSS_AMOUNT, 0))
-                    / NULLIF(SUM(inv.GROSS_AMOUNT), 0) AS cei
-            {inv_from}
-              AND inv.INVOICE_DATE IS NOT NULL
-            GROUP BY 1
-            ORDER BY 1 DESC
-            LIMIT 12
+            TOP 12
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23) AS period,
+              CAST(100 * SUM(IIF(UPPER(inv.INVOICE_STATUS) = 'PAID', inv.GROSS_AMOUNT, 0)) AS FLOAT) / NULLIF(SUM(inv.GROSS_AMOUNT), 0) AS cei
+            {inv_from} AND inv.INVOICE_DATE IS NOT NULL
+            GROUP BY
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23)
+            ORDER BY
+              1 DESC
         """)
         cei_rows.reverse()
 
         ar_pct_row = run_query(f"""
             SELECT
-                100 * SUM(ar.OPEN_AMOUNT_USD)
-                    / NULLIF(SUM(so.TOTAL_ORDER_VALUE), 0) AS ar_pct
+              CAST(100 * SUM(ar.OPEN_AMOUNT_USD) AS FLOAT) / NULLIF(SUM(so.TOTAL_ORDER_VALUE), 0) AS ar_pct
             {ar_from}
         """)
 
         forecast = run_query(f"""
-            SELECT AVG(f.MAPE) AS mape
-            FROM {BM}.forecast_accuracy_vw f
-            WHERE f.COMPANY_CODE IN (
-                SELECT DISTINCT inv.COMPANY_CODE
-                {inv_from}
-                  AND inv.COMPANY_CODE IS NOT NULL
-            )
+            SELECT
+              AVG(CAST(f.MAPE AS FLOAT)) AS mape
+            FROM {BM}.forecast_accuracy_vw AS f
+            WHERE
+              f.COMPANY_CODE IN (
+                SELECT DISTINCT
+                  inv.COMPANY_CODE
+                {inv_from} AND inv.COMPANY_CODE IS NOT NULL
+              )
         """)
 
         order_trend = run_query(f"""
             SELECT
-                DATE_TRUNC('month', so.ORDER_DATE)::VARCHAR AS period,
-                COUNT(*) AS order_count,
-                SUM(so.TOTAL_ORDER_VALUE) AS order_value
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, so.ORDER_DATE), 23) AS period,
+              COUNT_BIG(*) AS order_count,
+              SUM(so.TOTAL_ORDER_VALUE) AS order_value
             {ord_from}
-            GROUP BY 1
-            ORDER BY 1
+            GROUP BY
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, so.ORDER_DATE), 23)
+            ORDER BY
+              1
         """)
 
         invoice_by_status = run_query(f"""
             SELECT
-                inv.INVOICE_STATUS AS status,
-                COUNT(*) AS invoice_count,
-                SUM(inv.GROSS_AMOUNT) AS gross_amount
+              inv.INVOICE_STATUS AS status,
+              COUNT_BIG(*) AS invoice_count,
+              SUM(inv.GROSS_AMOUNT) AS gross_amount
             {inv_from}
-            GROUP BY 1
-            ORDER BY gross_amount DESC
+            GROUP BY
+              inv.INVOICE_STATUS
+            ORDER BY
+              CASE WHEN SUM(inv.GROSS_AMOUNT) IS NULL THEN 1 ELSE 0 END DESC, SUM(inv.GROSS_AMOUNT) DESC
         """)
 
         past_due_trend = run_query(f"""
             SELECT
-                DATE_TRUNC('month', ar.DUE_DATE)::VARCHAR AS period,
-                SUM(ar.OPEN_AMOUNT_USD) AS past_due_ar
-            {ar_from}
-              AND ar.DAYS_PAST_DUE > 0
-            GROUP BY 1
-            ORDER BY 1 DESC
-            LIMIT 24
+            TOP 24
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23) AS period,
+              SUM(ar.OPEN_AMOUNT_USD) AS past_due_ar
+            {ar_from} AND ar.DAYS_PAST_DUE > 0
+            GROUP BY
+              CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23)
+            ORDER BY
+              1 DESC
         """)
         past_due_trend.reverse()
 
@@ -539,103 +566,142 @@ def get_summary(
         cf_inv = cf.replace("COMPANY_CODE", "inv.COMPANY_CODE")
         q = _run_queries_parallel({
             "dso_rows": f"""
-                SELECT PERIOD_MONTH::VARCHAR AS period, AVG(DSO) AS dso
+                SELECT
+                TOP 12
+                  CONVERT(VARCHAR(30), PERIOD_MONTH, 23) AS period,
+                  AVG(CAST(DSO AS FLOAT)) AS dso
                 FROM {BM}.dso_vw
-                WHERE DSO IS NOT NULL {cf.replace('COMPANY_CODE', 'COMPANY_CODE')}
-                GROUP BY PERIOD_MONTH
-                ORDER BY PERIOD_MONTH DESC
-                LIMIT 12
+                WHERE
+                  DSO IS NOT NULL {cf.replace('COMPANY_CODE', 'COMPANY_CODE')}
+                GROUP BY
+                  PERIOD_MONTH
+                ORDER BY
+                  CASE WHEN PERIOD_MONTH IS NULL THEN 1 ELSE 0 END DESC, PERIOD_MONTH DESC
             """,
             "add_rows": f"""
-                SELECT COMPANY_CODE, AVG_DAYS_DELINQUENT AS add_val
+                SELECT
+                  COMPANY_CODE,
+                  AVG_DAYS_DELINQUENT AS add_val
                 FROM {BM}.add_vw
-                WHERE 1=1 {cf}
+                WHERE
+                  1 = 1 {cf}
             """,
             "past_due": f"""
                 SELECT
-                    SUM(TOTAL_AR) AS total_ar,
-                    SUM(PAST_DUE_AR) AS past_due_ar,
-                    AVG(PAST_DUE_PCT) AS past_due_pct,
-                    SUM(BUCKET_1_30) AS bucket_1_30,
-                    SUM(BUCKET_31_60) AS bucket_31_60,
-                    SUM(BUCKET_61_90) AS bucket_61_90,
-                    SUM(BUCKET_90_PLUS) AS bucket_90_plus
+                  SUM(TOTAL_AR) AS total_ar,
+                  SUM(PAST_DUE_AR) AS past_due_ar,
+                  AVG(CAST(PAST_DUE_PCT AS FLOAT)) AS past_due_pct,
+                  SUM(BUCKET_1_30) AS bucket_1_30,
+                  SUM(BUCKET_31_60) AS bucket_31_60,
+                  SUM(BUCKET_61_90) AS bucket_61_90,
+                  SUM(BUCKET_90_PLUS) AS bucket_90_plus
                 FROM {BM}.past_due_vw
-                WHERE 1=1 {cf}
+                WHERE
+                  1 = 1 {cf}
             """,
             "cei_rows": f"""
-                SELECT PERIOD_MONTH::VARCHAR AS period, AVG(CEI) AS cei
+                SELECT
+                TOP 12
+                  CONVERT(VARCHAR(30), PERIOD_MONTH, 23) AS period,
+                  AVG(CAST(CEI AS FLOAT)) AS cei
                 FROM {BM}.cei_vw
-                WHERE CEI IS NOT NULL {cf}
-                GROUP BY PERIOD_MONTH
-                ORDER BY PERIOD_MONTH DESC
-                LIMIT 12
+                WHERE
+                  CEI IS NOT NULL {cf}
+                GROUP BY
+                  PERIOD_MONTH
+                ORDER BY
+                  CASE WHEN PERIOD_MONTH IS NULL THEN 1 ELSE 0 END DESC, PERIOD_MONTH DESC
             """,
             "ar_pct": f"""
-                SELECT AVG(AR_PCT_OF_REVENUE) AS ar_pct
+                SELECT
+                  AVG(CAST(AR_PCT_OF_REVENUE AS FLOAT)) AS ar_pct
                 FROM {BM}.ar_pct_revenue_vw
-                WHERE 1=1 {cf}
+                WHERE
+                  1 = 1 {cf}
             """,
             "forecast": f"""
-                SELECT AVG(MAPE) AS mape, AVG(WAPE) AS wape
+                SELECT
+                  AVG(CAST(MAPE AS FLOAT)) AS mape,
+                  AVG(CAST(WAPE AS FLOAT)) AS wape
                 FROM {BM}.forecast_accuracy_vw
-                WHERE 1=1 {cf.replace('COMPANY_CODE', 'COMPANY_CODE')}
+                WHERE
+                  1 = 1 {cf.replace('COMPANY_CODE', 'COMPANY_CODE')}
             """,
             "order_trend": f"""
                 SELECT
-                    DATE_TRUNC('month', so.ORDER_DATE)::VARCHAR AS period,
-                    COUNT(*) AS order_count,
-                    SUM(so.TOTAL_ORDER_VALUE) AS order_value
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, so.ORDER_DATE), 23) AS period,
+                  COUNT_BIG(*) AS order_count,
+                  SUM(so.TOTAL_ORDER_VALUE) AS order_value
                 {ord_from}
-                GROUP BY 1
-                ORDER BY 1
+                GROUP BY
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, so.ORDER_DATE), 23)
+                ORDER BY
+                  1
             """,
             "invoice_by_status": f"""
                 SELECT
-                    inv.INVOICE_STATUS AS status,
-                    COUNT(*) AS invoice_count,
-                    SUM(inv.GROSS_AMOUNT) AS gross_amount
-                FROM {BM}.ar_invoice_vw inv
-                WHERE 1=1 {cf_inv}
-                GROUP BY 1
-                ORDER BY gross_amount DESC
+                  inv.INVOICE_STATUS AS status,
+                  COUNT_BIG(*) AS invoice_count,
+                  SUM(inv.GROSS_AMOUNT) AS gross_amount
+                FROM {BM}.ar_invoice_vw AS inv
+                WHERE
+                  1 = 1 {cf_inv}
+                GROUP BY
+                  inv.INVOICE_STATUS
+                ORDER BY
+                  CASE WHEN SUM(inv.GROSS_AMOUNT) IS NULL THEN 1 ELSE 0 END DESC, SUM(inv.GROSS_AMOUNT) DESC
             """,
             "past_due_trend": f"""
                 SELECT
-                    DATE_TRUNC('month', ar.DUE_DATE)::VARCHAR AS period,
-                    SUM(ar.OPEN_AMOUNT_USD) AS past_due_ar
-                FROM {BM}.ar_open_item_vw ar
-                WHERE ar.DAYS_PAST_DUE > 0 {cf_ar}
-                GROUP BY 1
-                ORDER BY 1 DESC
-                LIMIT 24
+                TOP 24
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23) AS period,
+                  SUM(ar.OPEN_AMOUNT_USD) AS past_due_ar
+                FROM {BM}.ar_open_item_vw AS ar
+                WHERE
+                  ar.DAYS_PAST_DUE > 0 {cf_ar}
+                GROUP BY
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23)
+                ORDER BY
+                  1 DESC
             """,
             "add_trend_rows": f"""
-                SELECT DATE_TRUNC('month', ar.DUE_DATE)::VARCHAR AS period,
-                       AVG(ar.DAYS_PAST_DUE) AS add_val
-                FROM {BM}.ar_open_item_vw ar
-                WHERE ar.DAYS_PAST_DUE > 0 {cf_ar}
-                GROUP BY 1
-                ORDER BY 1 DESC
-                LIMIT 24
+                SELECT
+                TOP 24
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23) AS period,
+                  AVG(CAST(ar.DAYS_PAST_DUE AS FLOAT)) AS add_val
+                FROM {BM}.ar_open_item_vw AS ar
+                WHERE
+                  ar.DAYS_PAST_DUE > 0 {cf_ar}
+                GROUP BY
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23)
+                ORDER BY
+                  1 DESC
             """,
             "ar_pct_trend_rows": f"""
-                SELECT PERIOD_MONTH::VARCHAR AS period, AVG(AR_PCT_OF_REVENUE) AS ar_pct
+                SELECT
+                TOP 24
+                  CONVERT(VARCHAR(30), PERIOD_MONTH, 23) AS period,
+                  AVG(CAST(AR_PCT_OF_REVENUE AS FLOAT)) AS ar_pct
                 FROM {BM}.ar_pct_revenue_vw
-                WHERE AR_PCT_OF_REVENUE IS NOT NULL {cf}
-                GROUP BY PERIOD_MONTH
-                ORDER BY PERIOD_MONTH DESC
-                LIMIT 24
+                WHERE
+                  AR_PCT_OF_REVENUE IS NOT NULL {cf}
+                GROUP BY
+                  PERIOD_MONTH
+                ORDER BY
+                  CASE WHEN PERIOD_MONTH IS NULL THEN 1 ELSE 0 END DESC, PERIOD_MONTH DESC
             """,
             "past_due_pct_trend": f"""
-                SELECT DATE_TRUNC('month', ar.DUE_DATE)::VARCHAR AS period,
-                       SUM(IFF(ar.DAYS_PAST_DUE > 0, ar.OPEN_AMOUNT_USD, 0))
-                           / NULLIF(SUM(ar.OPEN_AMOUNT_USD), 0) * 100 AS past_due_pct
-                FROM {BM}.ar_open_item_vw ar
-                WHERE 1=1 {cf_ar}
-                GROUP BY 1
-                ORDER BY 1 DESC
-                LIMIT 24
+                SELECT
+                TOP 24
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23) AS period,
+                  CAST(SUM(IIF(ar.DAYS_PAST_DUE > 0, ar.OPEN_AMOUNT_USD, 0)) AS FLOAT) / NULLIF(SUM(ar.OPEN_AMOUNT_USD), 0) * 100 AS past_due_pct
+                FROM {BM}.ar_open_item_vw AS ar
+                WHERE
+                  1 = 1 {cf_ar}
+                GROUP BY
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, ar.DUE_DATE), 23)
+                ORDER BY
+                  1 DESC
             """,
         })
         dso_rows = q["dso_rows"]
@@ -793,20 +859,25 @@ def get_orders(
     sf = _status_filter(order_status, "so.")
     return run_query(f"""
         SELECT
-            so.SALES_ORDER_ID AS sales_order_id,
-            so.CUSTOMER_ID AS customer_id,
-            cu.CUSTOMER_NAME AS customer_name,
-            so.COMPANY_CODE AS company_code,
-            so.ORDER_STATUS AS order_status,
-            so.ORDER_DATE::VARCHAR AS order_date,
-            so.TOTAL_ORDER_VALUE AS total_order_value,
-            so.CURRENCY_CODE AS currency_code,
-            so.CREDIT_CHECK_STATUS AS credit_check_status
-        FROM {BM}.sales_order_vw so
-        LEFT JOIN {BM}.customer_vw cu ON cu.CUSTOMER_ID = so.CUSTOMER_ID
-        WHERE 1=1 {cf}{df}{dtf}{sf}
-        ORDER BY so.ORDER_DATE DESC, so.SALES_ORDER_ID DESC
-        LIMIT {int(limit)} OFFSET {int(offset)}
+          so.SALES_ORDER_ID AS sales_order_id,
+          so.CUSTOMER_ID AS customer_id,
+          cu.CUSTOMER_NAME AS customer_name,
+          so.COMPANY_CODE AS company_code,
+          so.ORDER_STATUS AS order_status,
+          CONVERT(VARCHAR(30), so.ORDER_DATE, 23) AS order_date,
+          so.TOTAL_ORDER_VALUE AS total_order_value,
+          so.CURRENCY_CODE AS currency_code,
+          so.CREDIT_CHECK_STATUS AS credit_check_status
+        FROM {BM}.sales_order_vw AS so
+        LEFT JOIN {BM}.customer_vw AS cu
+          ON cu.CUSTOMER_ID = so.CUSTOMER_ID
+        WHERE
+          1 = 1 {cf} {df} {dtf} {sf}
+        ORDER BY
+          CASE WHEN so.ORDER_DATE IS NULL THEN 1 ELSE 0 END DESC, so.ORDER_DATE DESC,
+          CASE WHEN so.SALES_ORDER_ID IS NULL THEN 1 ELSE 0 END DESC, so.SALES_ORDER_ID DESC
+        OFFSET {int(offset)} ROWS
+        FETCH FIRST {int(limit)} ROWS ONLY
     """)
 
 
@@ -814,52 +885,69 @@ def get_order_timeline(order_id: str) -> list[dict]:
     safe_id = order_id.replace("'", "''")
     return run_query(f"""
         SELECT
-            SALES_ORDER_ID AS sales_order_id,
-            STATUS_SEQ AS status_seq,
-            LIFECYCLE_AREA AS lifecycle_area,
-            ORDER_STATUS AS order_status,
-            STATUS_DATE::VARCHAR AS status_date,
-            STATUS_TIMESTAMP::VARCHAR AS status_timestamp,
-            IS_LATEST_STATUS AS is_latest_status,
-            CHANGED_BY AS changed_by,
-            NOTES AS notes
+          SALES_ORDER_ID AS sales_order_id,
+          STATUS_SEQ AS status_seq,
+          LIFECYCLE_AREA AS lifecycle_area,
+          ORDER_STATUS AS order_status,
+          CONVERT(VARCHAR(30), STATUS_DATE, 23) AS status_date,
+          CONVERT(VARCHAR(30), STATUS_TIMESTAMP, 121) AS status_timestamp,
+          IS_LATEST_STATUS AS is_latest_status,
+          CHANGED_BY AS changed_by,
+          NOTES AS notes
         FROM {BM}.order_status_history_vw
-        WHERE SALES_ORDER_ID = '{safe_id}'
-        ORDER BY STATUS_SEQ
+        WHERE
+          SALES_ORDER_ID = '{safe_id}'
+        ORDER BY
+          CASE WHEN STATUS_SEQ IS NULL THEN 1 ELSE 0 END, STATUS_SEQ
     """)
 
 
 _INVOICE_SELECT = f"""
     SELECT
-        inv.INVOICE_ID AS invoice_id,
-        inv.SALES_ORDER_ID AS sales_order_id,
-        inv.CUSTOMER_ID AS customer_id,
-        cu.CUSTOMER_NAME AS customer_name,
-        inv.COMPANY_CODE AS company_code,
-        inv.INVOICE_DATE::VARCHAR AS invoice_date,
-        inv.DUE_DATE::VARCHAR AS due_date,
+      inv.INVOICE_ID AS invoice_id,
+      inv.SALES_ORDER_ID AS sales_order_id,
+      inv.CUSTOMER_ID AS customer_id,
+      cu.CUSTOMER_NAME AS customer_name,
+      inv.COMPANY_CODE AS company_code,
+      CONVERT(VARCHAR(30), inv.INVOICE_DATE, 23) AS invoice_date,
+      CONVERT(VARCHAR(30), inv.DUE_DATE, 23) AS due_date,
+      CONVERT(
+        VARCHAR(30),
         COALESCE(
-            pay.PAYMENT_DATE,
-            clr.CLEARING_DATE,
-            IFF(UPPER(inv.INVOICE_STATUS) = 'PAID', LEAST(inv.DUE_DATE, CURRENT_DATE()), NULL)
-        )::VARCHAR AS payment_date,
-        inv.GROSS_AMOUNT AS gross_amount,
-        inv.CURRENCY_CODE AS currency_code,
-        inv.INVOICE_STATUS AS invoice_status
-    FROM {{bm}}.ar_invoice_vw inv
-    LEFT JOIN {{bm}}.customer_vw cu ON cu.CUSTOMER_ID = inv.CUSTOMER_ID
+          pay.PAYMENT_DATE,
+          clr.CLEARING_DATE,
+          IIF(UPPER(inv.INVOICE_STATUS) = 'PAID', LEAST(inv.DUE_DATE, GETDATE()), NULL)
+        ),
+        23
+      ) AS payment_date,
+      inv.GROSS_AMOUNT AS gross_amount,
+      inv.CURRENCY_CODE AS currency_code,
+      inv.INVOICE_STATUS AS invoice_status
+    FROM {{bm}}.ar_invoice_vw AS inv
+    LEFT JOIN {{bm}}.customer_vw AS cu
+      ON cu.CUSTOMER_ID = inv.CUSTOMER_ID
     LEFT JOIN (
-        SELECT INVOICE_ID, MAX(PAYMENT_DATE) AS PAYMENT_DATE
-        FROM {{bm}}.payment_vw
-        WHERE INVOICE_ID IS NOT NULL
-        GROUP BY INVOICE_ID
-    ) pay ON pay.INVOICE_ID = inv.INVOICE_ID
+      SELECT
+        INVOICE_ID AS INVOICE_ID,
+        MAX(PAYMENT_DATE) AS PAYMENT_DATE
+      FROM {{bm}}.payment_vw
+      WHERE
+        INVOICE_ID IS NOT NULL
+      GROUP BY
+        INVOICE_ID
+    ) AS pay
+      ON pay.INVOICE_ID = inv.INVOICE_ID
     LEFT JOIN (
-        SELECT INVOICE_ID, MAX(CLEARING_DATE) AS CLEARING_DATE
-        FROM {{bm}}.ar_cleared_item_vw
-        WHERE INVOICE_ID IS NOT NULL
-        GROUP BY INVOICE_ID
-    ) clr ON clr.INVOICE_ID = inv.INVOICE_ID
+      SELECT
+        INVOICE_ID AS INVOICE_ID,
+        MAX(CLEARING_DATE) AS CLEARING_DATE
+      FROM {{bm}}.ar_cleared_item_vw
+      WHERE
+        INVOICE_ID IS NOT NULL
+      GROUP BY
+        INVOICE_ID
+    ) AS clr
+      ON clr.INVOICE_ID = inv.INVOICE_ID
 """
 
 
@@ -876,9 +964,12 @@ def get_invoices(
     dtf = _date_filter(date_from, date_to, "inv.INVOICE_DATE")
     return run_query(f"""
         {_INVOICE_SELECT.format(bm=BM)}
-        WHERE 1=1 {cf}{df}{dtf}
-        ORDER BY inv.INVOICE_DATE DESC
-        LIMIT {int(limit)} OFFSET {int(offset)}
+        WHERE
+          1 = 1 {cf} {df} {dtf}
+        ORDER BY
+          CASE WHEN inv.INVOICE_DATE IS NULL THEN 1 ELSE 0 END DESC, inv.INVOICE_DATE DESC
+        OFFSET {int(offset)} ROWS
+        FETCH FIRST {int(limit)} ROWS ONLY
     """)
 
 
@@ -886,8 +977,10 @@ def get_order_invoices(order_id: str) -> list[dict]:
     safe_id = order_id.replace("'", "''")
     return run_query(f"""
         {_INVOICE_SELECT.format(bm=BM)}
-        WHERE inv.SALES_ORDER_ID = '{safe_id}'
-        ORDER BY inv.INVOICE_DATE
+        WHERE
+          inv.SALES_ORDER_ID = '{safe_id}'
+        ORDER BY
+          CASE WHEN inv.INVOICE_DATE IS NULL THEN 1 ELSE 0 END, inv.INVOICE_DATE
     """)
 
 
@@ -895,12 +988,36 @@ def get_data_version() -> dict:
     """Lightweight fingerprint — polled by UI; full pages refetch only when this changes."""
     rows = run_query(f"""
         SELECT
-            (SELECT COUNT(*) FROM {BM}.sales_order_vw) AS order_cnt,
-            (SELECT COUNT(*) FROM {BM}.ar_open_item_vw) AS ar_cnt,
-            (SELECT COUNT(*) FROM {BM}.ar_invoice_vw) AS inv_cnt,
-            (SELECT COALESCE(MAX(STATUS_TIMESTAMP)::VARCHAR, '') FROM {BM}.order_status_history_vw) AS last_status_ts,
-            (SELECT COALESCE(SUM(PAST_DUE_AR), 0) FROM {BM}.past_due_vw) AS past_due_total,
-            (SELECT COALESCE(MAX(ACTIVITY_DATE)::VARCHAR, '') FROM {BM}.collection_activity_vw) AS last_collection_dt
+          (
+            SELECT
+              COUNT_BIG(*)
+            FROM {BM}.sales_order_vw
+          ) AS order_cnt,
+          (
+            SELECT
+              COUNT_BIG(*)
+            FROM {BM}.ar_open_item_vw
+          ) AS ar_cnt,
+          (
+            SELECT
+              COUNT_BIG(*)
+            FROM {BM}.ar_invoice_vw
+          ) AS inv_cnt,
+          (
+            SELECT
+              COALESCE(CONVERT(VARCHAR(30), MAX(STATUS_TIMESTAMP), 121), '')
+            FROM {BM}.order_status_history_vw
+          ) AS last_status_ts,
+          (
+            SELECT
+              COALESCE(SUM(PAST_DUE_AR), 0)
+            FROM {BM}.past_due_vw
+          ) AS past_due_total,
+          (
+            SELECT
+              COALESCE(CONVERT(VARCHAR(30), MAX(ACTIVITY_DATE), 23), '')
+            FROM {BM}.collection_activity_vw
+          ) AS last_collection_dt
     """)
     r = rows[0] if rows else {}
     parts = [
@@ -955,34 +1072,49 @@ def _fetch_kpi_series(
         inv_from = _scoped_invoice_from(dealer_id, date_from, date_to)
         if metric == "dso":
             return run_query(f"""
-                SELECT DATE_TRUNC('month', inv.INVOICE_DATE)::VARCHAR AS period,
-                       AVG(GREATEST(ar.DAYS_PAST_DUE, 0) + COALESCE(ar.PAYMENT_TERM_DAYS, 30)) AS value
-                {ar_from}
-                  AND inv.INVOICE_DATE IS NOT NULL
-                GROUP BY 1 ORDER BY 1
+                SELECT
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23) AS period,
+                  AVG(
+                    CAST(GREATEST(ar.DAYS_PAST_DUE, 0) + COALESCE(ar.PAYMENT_TERM_DAYS, 30) AS FLOAT)
+                  ) AS value
+                {ar_from} AND inv.INVOICE_DATE IS NOT NULL
+                GROUP BY
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23)
+                ORDER BY
+                  1
             """)
         if metric == "add":
             return run_query(f"""
-                SELECT ar.AGING_BUCKET AS label, AVG(ar.DAYS_PAST_DUE) AS value
-                {ar_from}
-                  AND ar.DAYS_PAST_DUE > 0
-                GROUP BY 1 ORDER BY 1
+                SELECT
+                  ar.AGING_BUCKET AS label,
+                  AVG(CAST(ar.DAYS_PAST_DUE AS FLOAT)) AS value
+                {ar_from} AND ar.DAYS_PAST_DUE > 0
+                GROUP BY
+                  ar.AGING_BUCKET
+                ORDER BY
+                  1
             """)
         if metric == "cei":
             return run_query(f"""
-                SELECT DATE_TRUNC('month', inv.INVOICE_DATE)::VARCHAR AS period,
-                       100 * SUM(IFF(UPPER(inv.INVOICE_STATUS) = 'PAID', inv.GROSS_AMOUNT, 0))
-                           / NULLIF(SUM(inv.GROSS_AMOUNT), 0) AS value
-                {inv_from}
-                  AND inv.INVOICE_DATE IS NOT NULL
-                GROUP BY 1 ORDER BY 1
+                SELECT
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23) AS period,
+                  CAST(100 * SUM(IIF(UPPER(inv.INVOICE_STATUS) = 'PAID', inv.GROSS_AMOUNT, 0)) AS FLOAT) / NULLIF(SUM(inv.GROSS_AMOUNT), 0) AS value
+                {inv_from} AND inv.INVOICE_DATE IS NOT NULL
+                GROUP BY
+                  CONVERT(VARCHAR(30), DATETRUNC(MONTH, inv.INVOICE_DATE), 23)
+                ORDER BY
+                  1
             """)
         if metric == "past_due":
             return run_query(f"""
-                SELECT ar.AGING_BUCKET AS label, SUM(ar.OPEN_AMOUNT_USD) AS value
-                {ar_from}
-                  AND ar.DAYS_PAST_DUE > 0
-                GROUP BY 1 ORDER BY 1
+                SELECT
+                  ar.AGING_BUCKET AS label,
+                  SUM(ar.OPEN_AMOUNT_USD) AS value
+                {ar_from} AND ar.DAYS_PAST_DUE > 0
+                GROUP BY
+                  ar.AGING_BUCKET
+                ORDER BY
+                  1
             """)
         return []
 
@@ -998,17 +1130,26 @@ def _fetch_kpi_series(
     view, col, period_col = views[metric]
     if period_col:
         return run_query(f"""
-            SELECT {period_col}::VARCHAR AS period, AVG({col}) AS value
+            SELECT
+              CONVERT(VARCHAR(30), {period_col}, 23) AS period,
+              AVG(CAST({col} AS FLOAT)) AS value
             FROM {BM}.{view}
-            WHERE {col} IS NOT NULL {cf}
-            GROUP BY {period_col}
-            ORDER BY {period_col}
+            WHERE
+              {col} IS NOT NULL {cf}
+            GROUP BY
+              {period_col}
+            ORDER BY
+              CASE WHEN {period_col} IS NULL THEN 1 ELSE 0 END, {period_col}
         """)
     return run_query(f"""
-        SELECT COMPANY_CODE AS label, {col} AS value
+        SELECT
+          COMPANY_CODE AS label,
+          {col} AS value
         FROM {BM}.{view}
-        WHERE {col} IS NOT NULL {cf}
-        ORDER BY COMPANY_CODE
+        WHERE
+          {col} IS NOT NULL {cf}
+        ORDER BY
+          CASE WHEN COMPANY_CODE IS NULL THEN 1 ELSE 0 END, COMPANY_CODE
     """)
 
 
@@ -1344,12 +1485,22 @@ def get_weekly_metrics(
         ),"""
 
     try:
-        run_query(f"select 1 from {BM}.proactive_dispute_risk_vw limit 1")
+        run_query(f"""
+            SELECT
+            TOP 1
+              1
+            FROM {BM}.proactive_dispute_risk_vw
+        """)
     except Exception:
         risk_join = """
         risk as (select cast(null as date) as d, cast(0 as decimal(38, 2)) as v where 1 = 0),"""
     try:
-        run_query(f"select billing_trigger_type from {BM}.billing_eligibility_vw limit 1")
+        run_query(f"""
+            SELECT
+            TOP 1
+              billing_trigger_type
+            FROM {BM}.billing_eligibility_vw
+        """)
     except Exception:
         blocked_join = """
         blocked as (select cast(null as date) as d, cast(0 as decimal(38, 2)) as v where 1 = 0),"""
@@ -1373,14 +1524,35 @@ def get_weekly_metrics(
     }
 
     kpi_row = run_query(f"""
-        select avg(dso) as dso, avg(cei) as cei, avg(mape) as mape
-        from (
-            select dso, null as cei, null as mape from {BM}.dso_vw where dso is not null {_company_filter(company)}
-            union all
-            select null, cei, null from {BM}.cei_vw where cei is not null {_company_filter(company)}
-            union all
-            select null, null, mape from {BM}.forecast_accuracy_vw where mape is not null {_company_filter(company)}
-        )
+        SELECT
+          AVG(CAST(dso AS FLOAT)) AS dso,
+          AVG(CAST(cei AS FLOAT)) AS cei,
+          AVG(CAST(mape AS FLOAT)) AS mape
+        FROM (
+          SELECT
+            DSO AS dso,
+            NULL AS cei,
+            NULL AS mape
+          FROM {BM}.dso_vw
+          WHERE
+            DSO IS NOT NULL {_company_filter(company)}
+          UNION ALL
+          SELECT
+            NULL,
+            CEI,
+            NULL
+          FROM {BM}.cei_vw
+          WHERE
+            CEI IS NOT NULL {_company_filter(company)}
+          UNION ALL
+          SELECT
+            NULL,
+            NULL,
+            MAPE
+          FROM {BM}.forecast_accuracy_vw
+          WHERE
+            MAPE IS NOT NULL {_company_filter(company)}
+        ) AS _sq1
     """)
     base = kpi_row[0] if kpi_row else {}
     base_dso = float(base.get("DSO") or base.get("dso") or 42)
@@ -1388,9 +1560,12 @@ def get_weekly_metrics(
     base_mape = float(base.get("MAPE") or base.get("mape") or 12)
 
     ar_snap = run_query(f"""
-        select count(*) as open_cnt, sum(OPEN_AMOUNT_USD) as open_amt
-        from {BM}.ar_open_item_vw ar
-        where 1=1 {cf_ar}{df_ar}
+        SELECT
+          COUNT_BIG(*) AS open_cnt,
+          SUM(OPEN_AMOUNT_USD) AS open_amt
+        FROM {BM}.ar_open_item_vw AS ar
+        WHERE
+          1 = 1 {cf_ar} {df_ar}
     """)
     snap = ar_snap[0] if ar_snap else {}
     open_cnt = float(snap.get("OPEN_CNT") or snap.get("open_cnt") or 0)
@@ -1673,28 +1848,29 @@ def _fetch_customer_reliability_raw(
         clauses.append(f"customer_risk_band = '{risk_band.replace(chr(39), chr(39)+chr(39))}'")
 
     sql = f"""
-    SELECT
-        CUSTOMER_ID,
-        CUSTOMER_NAME,
-        COMPANY_CODE,
-        CUSTOMER_SEGMENT,
-        RISK_CLASS,
-        customer_risk_band,
-        total_disputes,
-        open_disputes,
-        avg_resolution_days,
-        late_payment_count,
-        avg_days_beyond_terms,
-        past_due_usd,
-        max_days_past_due,
-        past_due_items,
-        broken_ptp_count,
-        ptp_count,
-        credit_block_orders,
-        order_hold_count,
-        fulfillment_block_orders
-    FROM {BM}.customer_o2c_history_vw
-    WHERE {' AND '.join(clauses)}
+        SELECT
+          CUSTOMER_ID,
+          CUSTOMER_NAME,
+          COMPANY_CODE,
+          CUSTOMER_SEGMENT,
+          RISK_CLASS,
+          customer_risk_band,
+          total_disputes,
+          open_disputes,
+          avg_resolution_days,
+          late_payment_count,
+          avg_days_beyond_terms,
+          past_due_usd,
+          max_days_past_due,
+          past_due_items,
+          broken_ptp_count,
+          ptp_count,
+          credit_block_orders,
+          order_hold_count,
+          fulfillment_block_orders
+        FROM {BM}.customer_o2c_history_vw
+        WHERE
+          {' AND '.join(clauses)}
     """
     return run_query(sql)
 

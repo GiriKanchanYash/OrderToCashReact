@@ -147,7 +147,10 @@ def call_cortex_analyst(question: str, conn=None) -> dict:
 
 def get_current_user() -> str:
     try:
-        rows = run_query("SELECT CURRENT_USER() AS USERNAME")
+        rows = run_query("""
+            SELECT
+              CURRENT_USER AS USERNAME
+        """)
         if rows:
             return str(rows[0].get("USERNAME", "UNKNOWN"))
     except Exception:
@@ -160,12 +163,20 @@ def save_question_history(question: str, qtype: str = "custom") -> None:
     try:
         safe_q = question.replace("'", "''")
         run_query(f"""
-            MERGE INTO {LK_IM}.genie_question_history t
-            USING (SELECT '{safe_q}' AS NORMALIZED_QUERY, '{qtype}' AS TYPE, '{user}' AS "USER", 'ORDERLENS' AS PERSONA) s
-            ON t.NORMALIZED_QUERY = s.NORMALIZED_QUERY AND t."USER" = s."USER"
-            WHEN MATCHED THEN UPDATE SET FREQUENCY = t.FREQUENCY + 1, LAST_ASKED_AT = CURRENT_TIMESTAMP(), PERSONA = 'ORDERLENS'
-            WHEN NOT MATCHED THEN INSERT (NORMALIZED_QUERY, TYPE, "USER", FREQUENCY, PERSONA)
-                VALUES (s.NORMALIZED_QUERY, s.TYPE, s."USER", 1, s.PERSONA)
+            MERGE INTO {LK_IM}.genie_question_history AS t
+            USING (
+              SELECT
+                '{safe_q}' AS NORMALIZED_QUERY,
+                '{qtype}' AS TYPE,
+                '{user}' AS [USER],
+                'ORDERLENS' AS PERSONA
+            ) AS s
+            ON t.NORMALIZED_QUERY = s.NORMALIZED_QUERY AND t.[USER] = s.[USER]
+            WHEN MATCHED THEN UPDATE SET
+              FREQUENCY = t.FREQUENCY + 1,
+              LAST_ASKED_AT = GETDATE(),
+              PERSONA = 'ORDERLENS'
+            WHEN NOT MATCHED THEN INSERT (NORMALIZED_QUERY, TYPE, [USER], FREQUENCY, PERSONA) VALUES (s.NORMALIZED_QUERY, s.TYPE, s.[USER], 1, s.PERSONA);
         """)
     except Exception:
         log.warning("Could not save question history", exc_info=True)
@@ -175,12 +186,17 @@ def load_saved_insights() -> list[dict]:
     user = get_current_user()
     try:
         return run_query(f"""
-            SELECT INSIGHT_ID, TITLE, QUESTION, SQL_TEXT
+            SELECT
+            TOP 20
+              INSIGHT_ID,
+              TITLE,
+              QUESTION,
+              SQL_TEXT
             FROM {LK_IM}.saved_insights
-            WHERE CREATED_BY = '{user}'
-              AND PAGE IN ('{_COPILOT_PAGE}', 'copilot')
-            ORDER BY CREATED_AT DESC
-            LIMIT 20
+            WHERE
+              CREATED_BY = '{user}' AND PAGE IN ('{_COPILOT_PAGE}', 'copilot')
+            ORDER BY
+              CASE WHEN CREATED_AT IS NULL THEN 1 ELSE 0 END DESC, CREATED_AT DESC
         """)
     except Exception:
         log.warning("Could not load saved insights", exc_info=True)
@@ -194,8 +210,15 @@ def save_insight(title: str, question: str, sql_text: str = "") -> None:
         safe_q = question.replace("'", "''")
         safe_sql = sql_text.replace("'", "''") if sql_text else ""
         run_query(f"""
-            INSERT INTO {LK_IM}.saved_insights (CREATED_BY, PAGE, TITLE, QUESTION, SQL_TEXT)
-            VALUES ('{user}', '{_COPILOT_PAGE}', '{safe_title}', '{safe_q}', '{safe_sql}')
+            INSERT INTO {LK_IM}.saved_insights (
+              CREATED_BY,
+              PAGE,
+              TITLE,
+              QUESTION,
+              SQL_TEXT
+            )
+            VALUES
+              ('{user}', '{_COPILOT_PAGE}', '{safe_title}', '{safe_q}', '{safe_sql}')
         """)
     except Exception:
         log.warning("Could not save insight", exc_info=True)
@@ -204,7 +227,11 @@ def save_insight(title: str, question: str, sql_text: str = "") -> None:
 def delete_insight(insight_id: int) -> None:
     user = get_current_user()
     try:
-        run_query(f"DELETE FROM {LK_IM}.saved_insights WHERE INSIGHT_ID = {insight_id} AND CREATED_BY = '{user}'")
+        run_query(f"""
+            DELETE FROM {LK_IM}.saved_insights
+            WHERE
+              INSIGHT_ID = {insight_id} AND CREATED_BY = '{user}'
+        """)
     except Exception:
         log.warning("Could not delete insight", exc_info=True)
 
@@ -213,13 +240,21 @@ def load_frequent_questions() -> list[dict]:
     user = get_current_user()
     try:
         return run_query(f"""
-            SELECT NORMALIZED_QUERY, TYPE, FREQUENCY
+            SELECT
+            TOP 10
+              NORMALIZED_QUERY,
+              TYPE,
+              FREQUENCY
             FROM {LK_IM}.genie_question_history
-            WHERE "USER" = '{user}'
-              AND (PERSONA = 'ORDERLENS' OR PERSONA IS NULL)
+            WHERE
+              [USER] = '{user}'
+              AND (
+                PERSONA = 'ORDERLENS' OR PERSONA IS NULL
+              )
               AND {_COPILOT_HISTORY_FILTER}
-            ORDER BY FREQUENCY DESC, LAST_ASKED_AT DESC
-            LIMIT 10
+            ORDER BY
+              CASE WHEN FREQUENCY IS NULL THEN 1 ELSE 0 END DESC, FREQUENCY DESC,
+              CASE WHEN LAST_ASKED_AT IS NULL THEN 1 ELSE 0 END DESC, LAST_ASKED_AT DESC
         """)
     except Exception:
         log.warning("Could not load frequent questions", exc_info=True)
@@ -229,13 +264,21 @@ def load_frequent_questions() -> list[dict]:
 def load_most_frequent_all() -> list[dict]:
     try:
         return run_query(f"""
-            SELECT NORMALIZED_QUERY, TYPE, SUM(FREQUENCY) AS TOTAL_FREQ
+            SELECT
+            TOP 10
+              NORMALIZED_QUERY,
+              TYPE,
+              SUM(FREQUENCY) AS TOTAL_FREQ
             FROM {LK_IM}.genie_question_history
-            WHERE (PERSONA = 'ORDERLENS' OR PERSONA IS NULL)
-              AND {_COPILOT_HISTORY_FILTER}
-            GROUP BY NORMALIZED_QUERY, TYPE
-            ORDER BY TOTAL_FREQ DESC
-            LIMIT 10
+            WHERE
+              (
+                PERSONA = 'ORDERLENS' OR PERSONA IS NULL
+              ) AND {_COPILOT_HISTORY_FILTER}
+            GROUP BY
+              NORMALIZED_QUERY,
+              TYPE
+            ORDER BY
+              CASE WHEN SUM(FREQUENCY) IS NULL THEN 1 ELSE 0 END DESC, SUM(FREQUENCY) DESC
         """)
     except Exception:
         log.warning("Could not load most frequent questions", exc_info=True)
@@ -301,11 +344,16 @@ def run_quick_analysis(key: str) -> dict:
 
     if key == "dso_overview":
         sql = f"""
-        SELECT PERIOD_MONTH::VARCHAR AS period, COMPANY_CODE, DSO
-        FROM {BM}.dso_vw
-        WHERE DSO IS NOT NULL
-        ORDER BY PERIOD_MONTH DESC
-        LIMIT 50
+            SELECT
+            TOP 50
+              CONVERT(VARCHAR(30), PERIOD_MONTH, 23) AS period,
+              COMPANY_CODE,
+              DSO
+            FROM {BM}.dso_vw
+            WHERE
+              DSO IS NOT NULL
+            ORDER BY
+              CASE WHEN PERIOD_MONTH IS NULL THEN 1 ELSE 0 END DESC, PERIOD_MONTH DESC
         """
         rows = run_query(sql)
         latest = rows[0] if rows else {}
@@ -326,10 +374,18 @@ def run_quick_analysis(key: str) -> dict:
 
     if key == "past_due_aging":
         sql = f"""
-        SELECT COMPANY_CODE, TOTAL_AR, PAST_DUE_AR, PAST_DUE_PCT,
-               BUCKET_1_30, BUCKET_31_60, BUCKET_61_90, BUCKET_90_PLUS
-        FROM {BM}.past_due_vw
-        ORDER BY PAST_DUE_AR DESC
+            SELECT
+              COMPANY_CODE,
+              TOTAL_AR,
+              PAST_DUE_AR,
+              PAST_DUE_PCT,
+              BUCKET_1_30,
+              BUCKET_31_60,
+              BUCKET_61_90,
+              BUCKET_90_PLUS
+            FROM {BM}.past_due_vw
+            ORDER BY
+              CASE WHEN PAST_DUE_AR IS NULL THEN 1 ELSE 0 END DESC, PAST_DUE_AR DESC
         """
         rows = run_query(sql)
         total_ar = sum(float(_val(r, "TOTAL_AR", default=0) or 0) for r in rows)
@@ -370,12 +426,17 @@ def run_quick_analysis(key: str) -> dict:
 
     if key == "collection_effectiveness":
         sql = f"""
-        SELECT PERIOD_MONTH::VARCHAR AS period, AVG(CEI) AS cei
-        FROM {BM}.cei_vw
-        WHERE CEI IS NOT NULL
-        GROUP BY PERIOD_MONTH
-        ORDER BY PERIOD_MONTH DESC
-        LIMIT 12
+            SELECT
+            TOP 12
+              CONVERT(VARCHAR(30), PERIOD_MONTH, 23) AS period,
+              AVG(CAST(CEI AS FLOAT)) AS cei
+            FROM {BM}.cei_vw
+            WHERE
+              CEI IS NOT NULL
+            GROUP BY
+              PERIOD_MONTH
+            ORDER BY
+              CASE WHEN PERIOD_MONTH IS NULL THEN 1 ELSE 0 END DESC, PERIOD_MONTH DESC
         """
         rows = run_query(sql)
         latest_cei = float(_val(rows[0], "CEI", "cei", default=0) or 0) if rows else 0
@@ -395,10 +456,16 @@ def run_quick_analysis(key: str) -> dict:
 
     if key == "cash_forecast_accuracy":
         sql = f"""
-        SELECT PERIOD_MONTH::VARCHAR AS period, COMPANY_CODE, MAPE, WAPE, FORECAST_BIAS
-        FROM {BM}.forecast_accuracy_vw
-        ORDER BY PERIOD_MONTH DESC
-        LIMIT 24
+            SELECT
+            TOP 24
+              CONVERT(VARCHAR(30), PERIOD_MONTH, 23) AS period,
+              COMPANY_CODE,
+              MAPE,
+              WAPE,
+              FORECAST_BIAS
+            FROM {BM}.forecast_accuracy_vw
+            ORDER BY
+              CASE WHEN PERIOD_MONTH IS NULL THEN 1 ELSE 0 END DESC, PERIOD_MONTH DESC
         """
         rows = run_query(sql)
         mape_vals = [float(_val(r, "MAPE", default=0) or 0) for r in rows]
@@ -643,13 +710,14 @@ def _enrich_copilot_rows(rows: list[dict]) -> list[dict]:
     try:
         lookup_rows = run_query(f"""
             SELECT
-                CUSTOMER_ID,
-                COMPANY_CODE,
-                CUSTOMER_NAME,
-                RISK_CLASS,
-                CUSTOMER_SEGMENT
+              CUSTOMER_ID,
+              COMPANY_CODE,
+              CUSTOMER_NAME,
+              RISK_CLASS,
+              CUSTOMER_SEGMENT
             FROM {BM}.customer_vw
-            WHERE CUSTOMER_ID IN ({in_clause})
+            WHERE
+              CUSTOMER_ID IN ({in_clause})
         """)
     except Exception:
         log.warning("Customer name enrichment query failed", exc_info=True)
@@ -1328,7 +1396,11 @@ def _is_lookup_style_copilot_question(message: str) -> bool:
 
 def _fetch_latest_invoices(limit: int = 10) -> tuple[list[dict], str]:
     lim = max(1, min(int(limit or 10), 25))
-    sql_tool = f"SELECT * FROM TABLE({DB}.O2C_AGENT.SP_TOOL_GET_LATEST_INVOICE(NULL, NULL, {lim}))"
+    sql_tool = f"""
+        SELECT
+          *
+        FROM TABLE({DB}.O2C_AGENT.SP_TOOL_GET_LATEST_INVOICE(NULL, NULL, {lim}))
+    """
     try:
         rows = run_query(sql_tool)
         if rows:
@@ -1337,27 +1409,32 @@ def _fetch_latest_invoices(limit: int = 10) -> tuple[list[dict], str]:
         log.warning("SP_TOOL_GET_LATEST_INVOICE failed; using ar_invoice_vw fallback", exc_info=True)
     sql = f"""
         SELECT
-            inv.INVOICE_ID AS invoice_id,
-            inv.SALES_ORDER_ID AS sales_order_id,
-            inv.CUSTOMER_ID AS customer_id,
-            COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
-            inv.COMPANY_CODE AS company_code,
-            inv.INVOICE_DATE AS invoice_date,
-            inv.DUE_DATE AS due_date,
-            inv.GROSS_AMOUNT AS gross_amount,
-            inv.INVOICE_STATUS AS invoice_status,
-            inv.CURRENCY_CODE AS currency_code
-        FROM {BM}.ar_invoice_vw inv
-        LEFT JOIN {BM}.customer_vw cu
+        TOP {lim}
+          inv.INVOICE_ID AS invoice_id,
+          inv.SALES_ORDER_ID AS sales_order_id,
+          inv.CUSTOMER_ID AS customer_id,
+          COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
+          inv.COMPANY_CODE AS company_code,
+          inv.INVOICE_DATE AS invoice_date,
+          inv.DUE_DATE AS due_date,
+          inv.GROSS_AMOUNT AS gross_amount,
+          inv.INVOICE_STATUS AS invoice_status,
+          inv.CURRENCY_CODE AS currency_code
+        FROM {BM}.ar_invoice_vw AS inv
+        LEFT JOIN {BM}.customer_vw AS cu
           ON cu.CUSTOMER_ID = inv.CUSTOMER_ID AND cu.COMPANY_CODE = inv.COMPANY_CODE
         LEFT JOIN (
-            SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-            FROM {BM}.customer_vw
-            GROUP BY CUSTOMER_ID
-        ) cu_any
+          SELECT
+            CUSTOMER_ID AS CUSTOMER_ID,
+            MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
+          FROM {BM}.customer_vw
+          GROUP BY
+            CUSTOMER_ID
+        ) AS cu_any
           ON cu_any.CUSTOMER_ID = inv.CUSTOMER_ID
-        ORDER BY inv.INVOICE_DATE DESC NULLS LAST, inv.INVOICE_ID DESC
-        LIMIT {lim}
+        ORDER BY
+          inv.INVOICE_DATE DESC,
+          CASE WHEN inv.INVOICE_ID IS NULL THEN 1 ELSE 0 END DESC, inv.INVOICE_ID DESC
     """
     rows = run_query(sql)
     return _enrich_copilot_rows(rows), sql
@@ -1367,28 +1444,32 @@ def _fetch_top_invoices(limit: int = 5) -> tuple[list[dict], str]:
     lim = max(1, min(int(limit or 5), 25))
     sql = f"""
         SELECT
-            inv.INVOICE_ID AS invoice_id,
-            inv.SALES_ORDER_ID AS sales_order_id,
-            inv.CUSTOMER_ID AS customer_id,
-            COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
-            inv.COMPANY_CODE AS company_code,
-            inv.INVOICE_DATE AS invoice_date,
-            inv.DUE_DATE AS due_date,
-            inv.GROSS_AMOUNT AS gross_amount,
-            inv.INVOICE_STATUS AS invoice_status,
-            inv.CURRENCY_CODE AS currency_code
-        FROM {BM}.ar_invoice_vw inv
-        LEFT JOIN {BM}.customer_vw cu
-          ON cu.CUSTOMER_ID = inv.CUSTOMER_ID
-         AND cu.COMPANY_CODE = inv.COMPANY_CODE
+        TOP {lim}
+          inv.INVOICE_ID AS invoice_id,
+          inv.SALES_ORDER_ID AS sales_order_id,
+          inv.CUSTOMER_ID AS customer_id,
+          COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
+          inv.COMPANY_CODE AS company_code,
+          inv.INVOICE_DATE AS invoice_date,
+          inv.DUE_DATE AS due_date,
+          inv.GROSS_AMOUNT AS gross_amount,
+          inv.INVOICE_STATUS AS invoice_status,
+          inv.CURRENCY_CODE AS currency_code
+        FROM {BM}.ar_invoice_vw AS inv
+        LEFT JOIN {BM}.customer_vw AS cu
+          ON cu.CUSTOMER_ID = inv.CUSTOMER_ID AND cu.COMPANY_CODE = inv.COMPANY_CODE
         LEFT JOIN (
-            SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-            FROM {BM}.customer_vw
-            GROUP BY CUSTOMER_ID
-        ) cu_any
+          SELECT
+            CUSTOMER_ID AS CUSTOMER_ID,
+            MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
+          FROM {BM}.customer_vw
+          GROUP BY
+            CUSTOMER_ID
+        ) AS cu_any
           ON cu_any.CUSTOMER_ID = inv.CUSTOMER_ID
-        ORDER BY inv.GROSS_AMOUNT DESC NULLS LAST, inv.INVOICE_DATE DESC NULLS LAST
-        LIMIT {lim}
+        ORDER BY
+          inv.GROSS_AMOUNT DESC,
+          inv.INVOICE_DATE DESC
     """
     rows = run_query(sql)
     return _enrich_copilot_rows(rows), sql
@@ -1397,18 +1478,21 @@ def _fetch_top_invoices(limit: int = 5) -> tuple[list[dict], str]:
 def _past_due_customers_sql(limit: int = 10) -> str:
     return f"""
         SELECT
-            ar.CUSTOMER_ID AS customer_id,
-            COALESCE(c.CUSTOMER_NAME, ar.CUSTOMER_ID) AS customer_name,
-            SUM(ar.OPEN_AMOUNT_USD) AS past_due_usd,
-            MAX(ar.DAYS_PAST_DUE) AS max_days_past_due
-        FROM {BM}.ar_open_item_vw ar
-        LEFT JOIN {BM}.customer_vw c
-          ON c.CUSTOMER_ID = ar.CUSTOMER_ID
-         AND c.COMPANY_CODE = ar.COMPANY_CODE
-        WHERE ar.DAYS_PAST_DUE > 0
-        GROUP BY ar.CUSTOMER_ID, COALESCE(c.CUSTOMER_NAME, ar.CUSTOMER_ID)
-        ORDER BY past_due_usd DESC
-        LIMIT {limit}
+        TOP {limit}
+          ar.CUSTOMER_ID AS customer_id,
+          COALESCE(c.CUSTOMER_NAME, ar.CUSTOMER_ID) AS customer_name,
+          SUM(ar.OPEN_AMOUNT_USD) AS past_due_usd,
+          MAX(ar.DAYS_PAST_DUE) AS max_days_past_due
+        FROM {BM}.ar_open_item_vw AS ar
+        LEFT JOIN {BM}.customer_vw AS c
+          ON c.CUSTOMER_ID = ar.CUSTOMER_ID AND c.COMPANY_CODE = ar.COMPANY_CODE
+        WHERE
+          ar.DAYS_PAST_DUE > 0
+        GROUP BY
+          ar.CUSTOMER_ID,
+          COALESCE(c.CUSTOMER_NAME, ar.CUSTOMER_ID)
+        ORDER BY
+          CASE WHEN SUM(ar.OPEN_AMOUNT_USD) IS NULL THEN 1 ELSE 0 END DESC, SUM(ar.OPEN_AMOUNT_USD) DESC
     """
 
 
@@ -1680,11 +1764,12 @@ def _agent_entity_context(
     order_invoice_ids: list[str] = []
     if sales_order_id and not invoice_id:
         inv_rows = run_query(f"""
-            SELECT DISTINCT INVOICE_ID
+            SELECT DISTINCT
+            TOP 20
+              INVOICE_ID
             FROM {BM}.ar_invoice_vw
-            WHERE SALES_ORDER_ID = '{safe_so}'
-              AND INVOICE_ID IS NOT NULL
-            LIMIT 20
+            WHERE
+              SALES_ORDER_ID = '{safe_so}' AND INVOICE_ID IS NOT NULL
         """)
         order_invoice_ids = [
             str(_val(r, "INVOICE_ID", "invoice_id") or "").replace("'", "''")
@@ -1713,18 +1798,20 @@ def _agent_entity_context(
 
     contact_rows = run_query(f"""
         SELECT
-            ca.ACTIVITY_ID,
-            ca.ACTIVITY_TYPE,
-            ca.ACTIVITY_DATE,
-            ca.CONTACT_OUTCOME,
-            ca.INVOICE_ID,
-            s.NOTES
-        FROM {BM}.collection_activity_vw ca
-        LEFT JOIN {LK_RV}.collection_activity s
+        TOP 8
+          ca.ACTIVITY_ID,
+          ca.ACTIVITY_TYPE,
+          ca.ACTIVITY_DATE,
+          ca.CONTACT_OUTCOME,
+          ca.INVOICE_ID,
+          s.NOTES
+        FROM {BM}.collection_activity_vw AS ca
+        LEFT JOIN {LK_RV}.collection_activity AS s
           ON s.ACTIVITY_ID = ca.ACTIVITY_ID
-        WHERE ca.CUSTOMER_ID = '{safe_id}' {co_filter}{contact_filter}
-        ORDER BY ca.ACTIVITY_DATE DESC NULLS LAST
-        LIMIT 8
+        WHERE
+          ca.CUSTOMER_ID = '{safe_id}' {co_filter} {contact_filter}
+        ORDER BY
+          ca.ACTIVITY_DATE DESC
     """)
 
     dispute_filter = ""
@@ -1736,40 +1823,52 @@ def _agent_entity_context(
 
     dispute_rows = run_query(f"""
         SELECT
-            d.DISPUTE_ID,
-            d.INVOICE_ID,
-            d.DISPUTE_REASON,
-            d.DISPUTE_STATUS,
-            d.DISPUTED_AMOUNT,
-            d.OPENED_DATE
-        FROM {BM}.dispute_vw d
-        WHERE d.CUSTOMER_ID = '{safe_id}'
-          AND UPPER(COALESCE(d.DISPUTE_STATUS, '')) NOT IN (
-              'RESOLVED', 'CLOSED', 'CANCELLED', 'WRITTEN_OFF'
-          ){dispute_filter}
-        ORDER BY d.DISPUTED_AMOUNT DESC NULLS LAST
-        LIMIT 6
+        TOP 6
+          d.DISPUTE_ID,
+          d.INVOICE_ID,
+          d.DISPUTE_REASON,
+          d.DISPUTE_STATUS,
+          d.DISPUTED_AMOUNT,
+          d.OPENED_DATE
+        FROM {BM}.dispute_vw AS d
+        WHERE
+          d.CUSTOMER_ID = '{safe_id}'
+          AND NOT UPPER(COALESCE(d.DISPUTE_STATUS, '')) IN ('RESOLVED', 'CLOSED', 'CANCELLED', 'WRITTEN_OFF') {dispute_filter}
+        ORDER BY
+          d.DISPUTED_AMOUNT DESC
     """)
 
     ptp_rows: list[dict] = []
     if invoice_id:
         ptp_rows = run_query(f"""
-            SELECT PTP_ID, INVOICE_ID, PROMISED_PAY_DATE, PROMISED_AMOUNT, PTP_STATUS
+            SELECT
+            TOP 5
+              PTP_ID,
+              INVOICE_ID,
+              PROMISED_PAY_DATE,
+              PROMISED_AMOUNT,
+              PTP_STATUS
             FROM {BM}.ptp_vw
-            WHERE CUSTOMER_ID = '{safe_id}'
-              AND INVOICE_ID = '{safe_inv}'
-            ORDER BY PROMISED_PAY_DATE DESC NULLS LAST
-            LIMIT 5
+            WHERE
+              CUSTOMER_ID = '{safe_id}' AND INVOICE_ID = '{safe_inv}'
+            ORDER BY
+              PROMISED_PAY_DATE DESC
         """)
     elif order_invoice_ids:
         inv_in = ", ".join(f"'{i}'" for i in order_invoice_ids)
         ptp_rows = run_query(f"""
-            SELECT PTP_ID, INVOICE_ID, PROMISED_PAY_DATE, PROMISED_AMOUNT, PTP_STATUS
+            SELECT
+            TOP 5
+              PTP_ID,
+              INVOICE_ID,
+              PROMISED_PAY_DATE,
+              PROMISED_AMOUNT,
+              PTP_STATUS
             FROM {BM}.ptp_vw
-            WHERE CUSTOMER_ID = '{safe_id}'
-              AND INVOICE_ID IN ({inv_in})
-            ORDER BY PROMISED_PAY_DATE DESC NULLS LAST
-            LIMIT 5
+            WHERE
+              CUSTOMER_ID = '{safe_id}' AND INVOICE_ID IN ({inv_in})
+            ORDER BY
+              PROMISED_PAY_DATE DESC
         """)
 
     if invoice_id:
@@ -1987,8 +2086,8 @@ def billing_agent_queue(customer_id: str | None = None) -> list[dict]:
     row_limit = 200 if customer_id else 50
 
     sql = f"""
-    WITH base AS (
-        SELECT
+        WITH base AS (
+          SELECT
             be.SALES_ORDER_ID AS sales_order_id,
             be.CUSTOMER_ID AS customer_id,
             COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
@@ -1998,62 +2097,102 @@ def billing_agent_queue(customer_id: str | None = None) -> list[dict]:
             be.TOTAL_ORDER_VALUE AS total_order_value,
             be.DELIVERY_ID AS delivery_id,
             be.DELIVERY_STATUS AS delivery_status,
-            be.GOODS_ISSUE_DATE::VARCHAR AS goods_issue_date,
+            CONVERT(VARCHAR(30), be.GOODS_ISSUE_DATE, 23) AS goods_issue_date,
             be.billing_eligibility_status AS billing_eligibility_status,
             be.billing_eligibility_reason AS billing_eligibility_reason,
             be.billing_trigger_type AS billing_trigger_type,
             be.invoice_count AS invoice_count,
-            be.last_invoice_date::VARCHAR AS last_invoice_date,
+            CONVERT(VARCHAR(30), be.last_invoice_date, 23) AS last_invoice_date,
             CASE
-                WHEN be.billing_eligibility_status = 'BLOCKED' THEN 'ACT_NOW'
-                WHEN be.billing_eligibility_status IN (
-                    'NO_DELIVERY', 'PENDING_GOODS_ISSUE', 'PENDING_DELIVERY',
-                    'PENDING_MILESTONE', 'PENDING_SERVICE_CLOSE', 'PENDING_BILLING_CYCLE'
-                ) THEN 'PLAN_THIS_WEEK'
-                ELSE 'MONITOR'
+              WHEN be.billing_eligibility_status = 'BLOCKED'
+              THEN 'ACT_NOW'
+              WHEN be.billing_eligibility_status IN (
+                'NO_DELIVERY',
+                'PENDING_GOODS_ISSUE',
+                'PENDING_DELIVERY',
+                'PENDING_MILESTONE',
+                'PENDING_SERVICE_CLOSE',
+                'PENDING_BILLING_CYCLE'
+              )
+              THEN 'PLAN_THIS_WEEK'
+              ELSE 'MONITOR'
             END AS action_group
-        FROM {BM}.billing_eligibility_vw be
-        LEFT JOIN {BM}.customer_vw cu
-          ON cu.CUSTOMER_ID = be.CUSTOMER_ID
-         AND cu.COMPANY_CODE = be.COMPANY_CODE
-        LEFT JOIN (
-            SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
+          FROM {BM}.billing_eligibility_vw AS be
+          LEFT JOIN {BM}.customer_vw AS cu
+            ON cu.CUSTOMER_ID = be.CUSTOMER_ID AND cu.COMPANY_CODE = be.COMPANY_CODE
+          LEFT JOIN (
+            SELECT
+              CUSTOMER_ID AS CUSTOMER_ID,
+              MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
             FROM {BM}.customer_vw
-            GROUP BY CUSTOMER_ID
-        ) cu_any
-          ON cu_any.CUSTOMER_ID = be.CUSTOMER_ID
-        WHERE be.billing_eligibility_status != 'ELIGIBLE'
-          {cust_filter}
-    ),
-    ranked AS (
-        SELECT
+            GROUP BY
+              CUSTOMER_ID
+          ) AS cu_any
+            ON cu_any.CUSTOMER_ID = be.CUSTOMER_ID
+          WHERE
+            be.billing_eligibility_status <> 'ELIGIBLE' {cust_filter}
+        ), ranked AS (
+          SELECT
             b.*,
-            ROW_NUMBER() OVER (
-                PARTITION BY b.billing_eligibility_status
-                ORDER BY b.total_order_value DESC NULLS LAST
-            ) AS rn_per_status
-        FROM base b
-    )
-    SELECT
-        sales_order_id, customer_id, customer_name, company_code, order_status,
-        credit_check_status, total_order_value, delivery_id, delivery_status,
-        goods_issue_date, billing_eligibility_status, billing_eligibility_reason,
-        billing_trigger_type, invoice_count, last_invoice_date, action_group
-    FROM ranked
-    WHERE rn_per_status <= {per_status_cap}
-    ORDER BY
-        CASE billing_eligibility_status
-            WHEN 'BLOCKED' THEN 1
-            WHEN 'PENDING_GOODS_ISSUE' THEN 2
-            WHEN 'PENDING_MILESTONE' THEN 3
-            WHEN 'NO_DELIVERY' THEN 4
-            WHEN 'PENDING_DELIVERY' THEN 5
-            WHEN 'PENDING_SERVICE_CLOSE' THEN 6
-            WHEN 'PENDING_BILLING_CYCLE' THEN 7
+            ROW_NUMBER() OVER (PARTITION BY b.billing_eligibility_status ORDER BY b.total_order_value DESC) AS rn_per_status
+          FROM base AS b
+        )
+        SELECT
+        TOP {row_limit}
+          sales_order_id,
+          customer_id,
+          customer_name,
+          company_code,
+          order_status,
+          credit_check_status,
+          total_order_value,
+          delivery_id,
+          delivery_status,
+          goods_issue_date,
+          billing_eligibility_status,
+          billing_eligibility_reason,
+          billing_trigger_type,
+          invoice_count,
+          last_invoice_date,
+          action_group
+        FROM ranked
+        WHERE
+          rn_per_status <= {per_status_cap}
+        ORDER BY
+          CASE WHEN CASE billing_eligibility_status
+            WHEN 'BLOCKED'
+            THEN 1
+            WHEN 'PENDING_GOODS_ISSUE'
+            THEN 2
+            WHEN 'PENDING_MILESTONE'
+            THEN 3
+            WHEN 'NO_DELIVERY'
+            THEN 4
+            WHEN 'PENDING_DELIVERY'
+            THEN 5
+            WHEN 'PENDING_SERVICE_CLOSE'
+            THEN 6
+            WHEN 'PENDING_BILLING_CYCLE'
+            THEN 7
             ELSE 8
-        END,
-        total_order_value DESC NULLS LAST
-    LIMIT {row_limit}
+          END IS NULL THEN 1 ELSE 0 END, CASE billing_eligibility_status
+            WHEN 'BLOCKED'
+            THEN 1
+            WHEN 'PENDING_GOODS_ISSUE'
+            THEN 2
+            WHEN 'PENDING_MILESTONE'
+            THEN 3
+            WHEN 'NO_DELIVERY'
+            THEN 4
+            WHEN 'PENDING_DELIVERY'
+            THEN 5
+            WHEN 'PENDING_SERVICE_CLOSE'
+            THEN 6
+            WHEN 'PENDING_BILLING_CYCLE'
+            THEN 7
+            ELSE 8
+          END,
+          total_order_value DESC
     """
     rows = run_query(sql)
     rows = _enrich_copilot_rows(rows)
@@ -2222,23 +2361,50 @@ def billing_agent_mark_reviewed(payload: dict) -> dict:
 
     try:
         seq_rows = run_query(f"""
-            SELECT COALESCE(MAX(STATUS_SEQ), 0) + 1 AS next_seq
+            SELECT
+              COALESCE(MAX(STATUS_SEQ), 0) + 1 AS next_seq
             FROM {LK_RV}.order_status_history
-            WHERE SALES_ORDER_ID = '{safe_so}'
+            WHERE
+              SALES_ORDER_ID = '{safe_so}'
         """)
         next_seq = int(seq_rows[0].get("next_seq") or seq_rows[0].get("NEXT_SEQ") or 1)
 
         run_execute(f"""
             INSERT INTO {LK_RV}.order_status_history (
-                STATUS_EVENT_ID, SALES_ORDER_ID, CUSTOMER_ID, COMPANY_CODE, STATUS_SEQ,
-                LIFECYCLE_AREA, ORDER_STATUS, STATUS_DATE, STATUS_TIMESTAMP, CHANGED_BY,
-                IS_LATEST_STATUS, NOTES, CREATED_AT, UPDATED_AT, SOURCE_SYSTEM
-            ) VALUES (
-                '{event_id}', '{safe_so}', '{safe_cust}', '{safe_co}', {next_seq},
-                'BILLING', 'UNDER_BILLING_REVIEW', CURRENT_DATE(), CURRENT_TIMESTAMP(),
-                'ORDERLENS_BILLING_AGENT', TRUE, '{notes}',
-                CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), 'ORDERLENS_AGENT'
+              STATUS_EVENT_ID,
+              SALES_ORDER_ID,
+              CUSTOMER_ID,
+              COMPANY_CODE,
+              STATUS_SEQ,
+              LIFECYCLE_AREA,
+              ORDER_STATUS,
+              STATUS_DATE,
+              STATUS_TIMESTAMP,
+              CHANGED_BY,
+              IS_LATEST_STATUS,
+              NOTES,
+              CREATED_AT,
+              UPDATED_AT,
+              SOURCE_SYSTEM
             )
+            VALUES
+              (
+                '{event_id}',
+                '{safe_so}',
+                '{safe_cust}',
+                '{safe_co}',
+                {next_seq},
+                'BILLING',
+                'UNDER_BILLING_REVIEW',
+                CAST(GETDATE() AS DATE),
+                GETDATE(),
+                'ORDERLENS_BILLING_AGENT',
+                1,
+                '{notes}',
+                GETDATE(),
+                GETDATE(),
+                'ORDERLENS_AGENT'
+              )
         """)
         with _AGENT_CACHE_LOCK:
             _AGENT_CACHE.pop("billing_queue:v3", None)
@@ -2258,25 +2424,26 @@ def proactive_dispute_queue() -> list[dict]:
         return cached  # type: ignore[return-value]
 
     sql = f"""
-    SELECT
-        r.risk_id AS risk_id,
-        r.invoice_id AS invoice_id,
-        r.sales_order_id AS sales_order_id,
-        r.customer_id AS customer_id,
-        r.customer_name AS customer_name,
-        r.company_code AS company_code,
-        r.billing_trigger_type AS billing_trigger_type,
-        r.exposure_amount AS exposure_amount,
-        r.predicted_dispute_reason AS predicted_dispute_reason,
-        r.risk_driver AS risk_driver,
-        r.policy_refs AS policy_refs,
-        r.risk_score AS risk_score,
-        r.predicted_dispute_date::VARCHAR AS predicted_dispute_date,
-        r.action_group AS action_group,
-        r.priority_score AS priority_score
-    FROM {BM}.proactive_dispute_risk_vw r
-    ORDER BY r.priority_score DESC
-    LIMIT 50
+        SELECT
+        TOP 50
+          r.risk_id AS risk_id,
+          r.invoice_id AS invoice_id,
+          r.sales_order_id AS sales_order_id,
+          r.customer_id AS customer_id,
+          r.customer_name AS customer_name,
+          r.company_code AS company_code,
+          r.billing_trigger_type AS billing_trigger_type,
+          r.exposure_amount AS exposure_amount,
+          r.predicted_dispute_reason AS predicted_dispute_reason,
+          r.risk_driver AS risk_driver,
+          r.policy_refs AS policy_refs,
+          r.risk_score AS risk_score,
+          CONVERT(VARCHAR(30), r.predicted_dispute_date, 23) AS predicted_dispute_date,
+          r.action_group AS action_group,
+          r.priority_score AS priority_score
+        FROM {BM}.proactive_dispute_risk_vw AS r
+        ORDER BY
+          CASE WHEN r.priority_score IS NULL THEN 1 ELSE 0 END DESC, r.priority_score DESC
     """
     try:
         rows = run_query(sql)
@@ -2284,25 +2451,27 @@ def proactive_dispute_queue() -> list[dict]:
         log.warning("proactive_dispute_risk_vw unavailable; using billing eligibility fallback", exc_info=True)
         rows = run_query(f"""
             SELECT
-                'RISK-FALL-' || be.SALES_ORDER_ID AS risk_id,
-                NULL AS invoice_id,
-                be.SALES_ORDER_ID AS sales_order_id,
-                be.CUSTOMER_ID AS customer_id,
-                be.CUSTOMER_NAME AS customer_name,
-                be.COMPANY_CODE AS company_code,
-                coalesce(be.billing_trigger_type, 'DELIVERY_BASED') AS billing_trigger_type,
-                be.TOTAL_ORDER_VALUE AS exposure_amount,
-                'QUALITY' AS predicted_dispute_reason,
-                be.billing_eligibility_reason AS risk_driver,
-                array_construct('BILL-ACC-01') AS policy_refs,
-                0.65 AS risk_score,
-                dateadd(day, 14, current_date())::varchar AS predicted_dispute_date,
-                'PLAN_THIS_WEEK' AS action_group,
-                be.TOTAL_ORDER_VALUE * 0.65 AS priority_score
-            FROM {BM}.billing_eligibility_vw be
-            WHERE be.billing_eligibility_status IN ('BLOCKED', 'PENDING_GOODS_ISSUE', 'PENDING_MILESTONE')
-            ORDER BY be.TOTAL_ORDER_VALUE DESC
-            LIMIT 25
+            TOP 25
+              'RISK-FALL-' + be.SALES_ORDER_ID AS risk_id,
+              NULL AS invoice_id,
+              be.SALES_ORDER_ID AS sales_order_id,
+              be.CUSTOMER_ID AS customer_id,
+              be.CUSTOMER_NAME AS customer_name,
+              be.COMPANY_CODE AS company_code,
+              COALESCE(be.billing_trigger_type, 'DELIVERY_BASED') AS billing_trigger_type,
+              be.TOTAL_ORDER_VALUE AS exposure_amount,
+              'QUALITY' AS predicted_dispute_reason,
+              be.billing_eligibility_reason AS risk_driver,
+              ARRAY('BILL-ACC-01') AS policy_refs,
+              0.65 AS risk_score,
+              CONVERT(VARCHAR(30), DATEADD(DAY, 14, GETDATE()), 121) AS predicted_dispute_date,
+              'PLAN_THIS_WEEK' AS action_group,
+              be.TOTAL_ORDER_VALUE * 0.65 AS priority_score
+            FROM {BM}.billing_eligibility_vw AS be
+            WHERE
+              be.billing_eligibility_status IN ('BLOCKED', 'PENDING_GOODS_ISSUE', 'PENDING_MILESTONE')
+            ORDER BY
+              CASE WHEN be.TOTAL_ORDER_VALUE IS NULL THEN 1 ELSE 0 END DESC, be.TOTAL_ORDER_VALUE DESC
         """)
 
     rows = _enrich_copilot_rows(rows)
@@ -2411,13 +2580,15 @@ def collections_agent_queue(annual_interest_rate_pct: float = 8.0, customer_id: 
     # - PLAN_THIS_WEEK: not past due, due within the next 7 days
     # - MONITOR: not past due, due 8+ days out (week after next and beyond)
     sql = f"""
-    WITH rpc AS (
-        SELECT COMPANY_CODE, AVG(RPC_RATE_PCT) AS avg_rpc
-        FROM {BM}.rpc_vw
-        GROUP BY COMPANY_CODE
-    ),
-    base AS (
-        SELECT
+        WITH rpc AS (
+          SELECT
+            COMPANY_CODE AS COMPANY_CODE,
+            AVG(CAST(RPC_RATE_PCT AS FLOAT)) AS avg_rpc
+          FROM {BM}.rpc_vw
+          GROUP BY
+            COMPANY_CODE
+        ), base AS (
+          SELECT
             ar.INVOICE_ID AS invoice_id,
             ar.CUSTOMER_ID AS customer_id,
             COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
@@ -2427,80 +2598,100 @@ def collections_agent_queue(annual_interest_rate_pct: float = 8.0, customer_id: 
             ar.OPEN_AMOUNT_USD AS past_due_usd,
             ar.DAYS_PAST_DUE AS days_past_due,
             ar.DAYS_PAST_DUE AS max_days_past_due,
-            ar.DUE_DATE::VARCHAR AS due_date,
-            DATEDIFF('day', CURRENT_DATE(), ar.DUE_DATE) AS days_until_due,
+            CONVERT(VARCHAR(30), ar.DUE_DATE, 23) AS due_date,
+            DATEDIFF(DAY, CAST(GETDATE() AS DATE), ar.DUE_DATE) AS days_until_due,
             ar.AGING_BUCKET AS aging_bucket,
             1 AS open_items,
-            IFF(ar.AGING_BUCKET = '90+', ar.OPEN_AMOUNT_USD, 0) AS bucket_90_plus,
+            IIF(ar.AGING_BUCKET = '90+', ar.OPEN_AMOUNT_USD, 0) AS bucket_90_plus,
             COALESCE(rpc.avg_rpc, 50) AS avg_rpc,
             COALESCE(ar.DUNNING_LEVEL, cu.DUNNING_LEVEL, cu_any.DUNNING_LEVEL, 0) AS dunning_level,
             COALESCE(cu.ACCOUNT_MANAGER, cu_any.ACCOUNT_MANAGER) AS account_manager,
             ROUND(
-                ar.OPEN_AMOUNT_USD * ({rate} / 100.0) * (GREATEST(ar.DAYS_PAST_DUE, 0) / 365.0),
-                2
+              ar.OPEN_AMOUNT_USD * (
+                CAST({rate} AS FLOAT) / 100.0
+              ) * (
+                CAST(GREATEST(ar.DAYS_PAST_DUE, 0) AS FLOAT) / 365.0
+              ),
+              2
             ) AS amount_lost_usd,
             {rate} AS annual_interest_rate_pct,
-            ar.OPEN_AMOUNT_USD
-                * (1 + GREATEST(ar.DAYS_PAST_DUE, 0) / 30.0)
-                * (1 + (100 - COALESCE(rpc.avg_rpc, 50)) / 100.0) AS priority_score,
+            ar.OPEN_AMOUNT_USD * (
+              1 + CAST(GREATEST(ar.DAYS_PAST_DUE, 0) AS FLOAT) / 30.0
+            ) * (
+              1 + CAST((
+                100 - COALESCE(rpc.avg_rpc, 50)
+              ) AS FLOAT) / 100.0
+            ) AS priority_score,
             CASE
-                WHEN ar.DAYS_PAST_DUE > 0 THEN 'ACT_NOW'
-                WHEN DATEDIFF('day', CURRENT_DATE(), ar.DUE_DATE) BETWEEN 0 AND 7 THEN 'PLAN_THIS_WEEK'
-                WHEN DATEDIFF('day', CURRENT_DATE(), ar.DUE_DATE) >= 8 THEN 'MONITOR'
-                ELSE 'ACT_NOW'
+              WHEN ar.DAYS_PAST_DUE > 0
+              THEN 'ACT_NOW'
+              WHEN DATEDIFF(DAY, CAST(GETDATE() AS DATE), ar.DUE_DATE) BETWEEN 0 AND 7
+              THEN 'PLAN_THIS_WEEK'
+              WHEN DATEDIFF(DAY, CAST(GETDATE() AS DATE), ar.DUE_DATE) >= 8
+              THEN 'MONITOR'
+              ELSE 'ACT_NOW'
             END AS action_group
-        FROM {BM}.ar_open_item_vw ar
-        LEFT JOIN {BM}.customer_vw cu
-          ON cu.CUSTOMER_ID = ar.CUSTOMER_ID
-         AND cu.COMPANY_CODE = ar.COMPANY_CODE
-        LEFT JOIN (
+          FROM {BM}.ar_open_item_vw AS ar
+          LEFT JOIN {BM}.customer_vw AS cu
+            ON cu.CUSTOMER_ID = ar.CUSTOMER_ID AND cu.COMPANY_CODE = ar.COMPANY_CODE
+          LEFT JOIN (
             SELECT
-                CUSTOMER_ID,
-                MAX(CUSTOMER_NAME) AS CUSTOMER_NAME,
-                MAX(CUSTOMER_SEGMENT) AS CUSTOMER_SEGMENT,
-                MAX(DUNNING_LEVEL) AS DUNNING_LEVEL,
-                MAX(ACCOUNT_MANAGER) AS ACCOUNT_MANAGER
+              CUSTOMER_ID AS CUSTOMER_ID,
+              MAX(CUSTOMER_NAME) AS CUSTOMER_NAME,
+              MAX(CUSTOMER_SEGMENT) AS CUSTOMER_SEGMENT,
+              MAX(DUNNING_LEVEL) AS DUNNING_LEVEL,
+              MAX(ACCOUNT_MANAGER) AS ACCOUNT_MANAGER
             FROM {BM}.customer_vw
-            GROUP BY CUSTOMER_ID
-        ) cu_any
-          ON cu_any.CUSTOMER_ID = ar.CUSTOMER_ID
-        LEFT JOIN rpc
-          ON rpc.COMPANY_CODE = ar.COMPANY_CODE
-        WHERE ar.OPEN_AMOUNT_USD > 0
-          AND (
-            ar.DAYS_PAST_DUE > 0
-            OR DATEDIFF('day', CURRENT_DATE(), ar.DUE_DATE) BETWEEN 0 AND 120
-          )
-          {cust_filter}
-    ),
-    ranked AS (
-        SELECT
+            GROUP BY
+              CUSTOMER_ID
+          ) AS cu_any
+            ON cu_any.CUSTOMER_ID = ar.CUSTOMER_ID
+          LEFT JOIN rpc
+            ON rpc.COMPANY_CODE = ar.COMPANY_CODE
+          WHERE
+            ar.OPEN_AMOUNT_USD > 0
+            AND (
+              ar.DAYS_PAST_DUE > 0
+              OR DATEDIFF(DAY, CAST(GETDATE() AS DATE), ar.DUE_DATE) BETWEEN 0 AND 120
+            ) {cust_filter}
+        ), ranked AS (
+          SELECT
             base.*,
             ROW_NUMBER() OVER (
-                PARTITION BY action_group
-                ORDER BY
-                    CASE action_group
-                        WHEN 'ACT_NOW' THEN amount_lost_usd
-                        ELSE -days_until_due
-                    END DESC,
-                    open_amount_usd DESC
+              PARTITION BY action_group
+              ORDER BY CASE WHEN CASE action_group WHEN 'ACT_NOW' THEN amount_lost_usd ELSE -days_until_due END IS NULL THEN 1 ELSE 0 END DESC, CASE action_group WHEN 'ACT_NOW' THEN amount_lost_usd ELSE -days_until_due END DESC, CASE WHEN open_amount_usd IS NULL THEN 1 ELSE 0 END DESC, open_amount_usd DESC
             ) AS tier_rank
-        FROM base
-    )
-    SELECT * EXCLUDE (tier_rank)
-    FROM ranked
-    WHERE {tier_filter}
-    ORDER BY
-        CASE action_group
-            WHEN 'ACT_NOW' THEN 0
-            WHEN 'PLAN_THIS_WEEK' THEN 1
-            ELSE 2
-        END,
-        CASE action_group
-            WHEN 'ACT_NOW' THEN amount_lost_usd * -1
-            ELSE days_until_due
-        END,
-        open_amount_usd DESC
+          FROM base
+        )
+        SELECT
+          invoice_id,
+          customer_id,
+          customer_name,
+          company_code,
+          customer_segment,
+          open_amount_usd,
+          past_due_usd,
+          days_past_due,
+          max_days_past_due,
+          due_date,
+          days_until_due,
+          aging_bucket,
+          open_items,
+          bucket_90_plus,
+          avg_rpc,
+          dunning_level,
+          account_manager,
+          amount_lost_usd,
+          annual_interest_rate_pct,
+          priority_score,
+          action_group
+        FROM ranked
+        WHERE
+          {tier_filter}
+        ORDER BY
+          CASE WHEN CASE action_group WHEN 'ACT_NOW' THEN 0 WHEN 'PLAN_THIS_WEEK' THEN 1 ELSE 2 END IS NULL THEN 1 ELSE 0 END, CASE action_group WHEN 'ACT_NOW' THEN 0 WHEN 'PLAN_THIS_WEEK' THEN 1 ELSE 2 END,
+          CASE WHEN CASE action_group WHEN 'ACT_NOW' THEN amount_lost_usd * -1 ELSE days_until_due END IS NULL THEN 1 ELSE 0 END, CASE action_group WHEN 'ACT_NOW' THEN amount_lost_usd * -1 ELSE days_until_due END,
+          CASE WHEN open_amount_usd IS NULL THEN 1 ELSE 0 END DESC, open_amount_usd DESC
     """
     rows = run_query(sql)
     rows = _enrich_copilot_rows(rows)
@@ -2529,29 +2720,31 @@ def _collections_invoice_sql(
         else """AND ar.OPEN_AMOUNT_USD > 0
           AND (
             ar.DAYS_PAST_DUE > 0
-            OR DATEDIFF('day', CURRENT_DATE(), ar.DUE_DATE) BETWEEN 1 AND 120
+            OR DATEDIFF(DAY, CAST(GETDATE() AS DATE), ar.DUE_DATE) BETWEEN 1 AND 120
           )"""
     )
     return f"""
         SELECT
-            ar.INVOICE_ID,
-            ar.OPEN_AMOUNT_USD,
-            ar.DAYS_PAST_DUE,
-            ar.AGING_BUCKET,
-            ar.DUE_DATE,
-            ar.DUNNING_LEVEL,
-            ar.IS_DISPUTED,
-            ar.COMPANY_CODE,
-            d.DISPUTE_ID
-        FROM {BM}.ar_open_item_vw ar
-        LEFT JOIN {BM}.dispute_vw d
+        TOP {int(limit)}
+          ar.INVOICE_ID,
+          ar.OPEN_AMOUNT_USD,
+          ar.DAYS_PAST_DUE,
+          ar.AGING_BUCKET,
+          ar.DUE_DATE,
+          ar.DUNNING_LEVEL,
+          ar.IS_DISPUTED,
+          ar.COMPANY_CODE,
+          d.DISPUTE_ID
+        FROM {BM}.ar_open_item_vw AS ar
+        LEFT JOIN {BM}.dispute_vw AS d
           ON d.INVOICE_ID = ar.INVOICE_ID
-         AND d.CUSTOMER_ID = ar.CUSTOMER_ID
-         AND upper(coalesce(d.DISPUTE_STATUS, '')) NOT IN ('RESOLVED', 'CLOSED', 'CANCELLED')
-        WHERE ar.CUSTOMER_ID = '{safe_id}' {co_filter}{inv_filter}
-          {eligibility}
-        ORDER BY ar.DAYS_PAST_DUE DESC NULLS LAST, ar.OPEN_AMOUNT_USD DESC
-        LIMIT {int(limit)}
+          AND d.CUSTOMER_ID = ar.CUSTOMER_ID
+          AND NOT UPPER(COALESCE(d.DISPUTE_STATUS, '')) IN ('RESOLVED', 'CLOSED', 'CANCELLED')
+        WHERE
+          ar.CUSTOMER_ID = '{safe_id}' {co_filter} {inv_filter} {eligibility}
+        ORDER BY
+          ar.DAYS_PAST_DUE DESC,
+          CASE WHEN ar.OPEN_AMOUNT_USD IS NULL THEN 1 ELSE 0 END DESC, ar.OPEN_AMOUNT_USD DESC
     """
 
 
@@ -2582,8 +2775,17 @@ def collections_agent_recommendation(payload: dict) -> dict:
     invoice_id = str(payload.get("invoice_id") or "").strip() or None
 
     cust_rows = run_query(f"""
-        SELECT CUSTOMER_ID, CUSTOMER_NAME, CUSTOMER_SEGMENT, DUNNING_LEVEL, CREDIT_EXPOSURE, PAYMENT_TERMS
-        FROM {BM}.customer_vw WHERE CUSTOMER_ID = '{safe_id}' LIMIT 1
+        SELECT
+        TOP 1
+          CUSTOMER_ID,
+          CUSTOMER_NAME,
+          CUSTOMER_SEGMENT,
+          DUNNING_LEVEL,
+          CREDIT_EXPOSURE,
+          PAYMENT_TERMS
+        FROM {BM}.customer_vw
+        WHERE
+          CUSTOMER_ID = '{safe_id}'
     """)
     ar_rows, invoice_rows = _fetch_collections_invoices(
         customer_id, company_code, invoice_id=invoice_id, limit=25,
@@ -2783,27 +2985,61 @@ def collections_agent_log_ptp(payload: dict) -> dict:
     try:
         run_execute(f"""
             INSERT INTO {LK_RV}.collection_activity (
-                ACTIVITY_ID, CUSTOMER_ID, COMPANY_CODE, ACTIVITY_TYPE, ACTIVITY_DATE,
-                CONTACT_OUTCOME, IS_RIGHT_PARTY_CONTACT, NOTES, SOURCE_SYSTEM
+              ACTIVITY_ID,
+              CUSTOMER_ID,
+              COMPANY_CODE,
+              ACTIVITY_TYPE,
+              ACTIVITY_DATE,
+              CONTACT_OUTCOME,
+              IS_RIGHT_PARTY_CONTACT,
+              NOTES,
+              SOURCE_SYSTEM
             )
-            VALUES (
-                '{activity_id}', '{safe_cust}', '{safe_co}', 'CALL', CURRENT_DATE(),
-                '{contact_outcome}', {str(is_rpc).upper()}, '{safe_notes}', 'ORDERLENS_AGENT'
-            )
+            VALUES
+              (
+                '{activity_id}',
+                '{safe_cust}',
+                '{safe_co}',
+                'CALL',
+                CAST(GETDATE() AS DATE),
+                '{contact_outcome}',
+                {1 if is_rpc else 0},
+                '{safe_notes}',
+                'ORDERLENS_AGENT'
+              )
         """)
 
         invoice_sql = f"'{safe_invoice}'" if safe_invoice else "NULL"
         run_execute(f"""
             INSERT INTO {LK_RV}.promise_to_pay (
-                PTP_ID, CUSTOMER_ID, COMPANY_CODE, INVOICE_ID, ACTIVITY_ID,
-                PROMISE_DATE, PROMISED_PAY_DATE, PROMISED_AMOUNT, CURRENCY_CODE,
-                PTP_STATUS, IS_KEPT, SOURCE_SYSTEM
+              PTP_ID,
+              CUSTOMER_ID,
+              COMPANY_CODE,
+              INVOICE_ID,
+              ACTIVITY_ID,
+              PROMISE_DATE,
+              PROMISED_PAY_DATE,
+              PROMISED_AMOUNT,
+              CURRENCY_CODE,
+              PTP_STATUS,
+              IS_KEPT,
+              SOURCE_SYSTEM
             )
-            VALUES (
-                '{ptp_id}', '{safe_cust}', '{safe_co}', {invoice_sql}, '{activity_id}',
-                CURRENT_DATE(), '{safe_date}'::DATE, {amount}, 'USD',
-                'OPEN', FALSE, 'ORDERLENS_AGENT'
-            )
+            VALUES
+              (
+                '{ptp_id}',
+                '{safe_cust}',
+                '{safe_co}',
+                {invoice_sql},
+                '{activity_id}',
+                CAST(GETDATE() AS DATE),
+                CAST('{safe_date}' AS DATE),
+                {amount},
+                'USD',
+                'OPEN',
+                0,
+                'ORDERLENS_AGENT'
+              )
         """)
         promote_staging_to_mart("collections")
         return {
@@ -3015,13 +3251,28 @@ def collections_agent_mark_contacted(payload: dict) -> dict:
     try:
         run_query(f"""
             INSERT INTO {LK_RV}.collection_activity (
-                ACTIVITY_ID, CUSTOMER_ID, COMPANY_CODE, ACTIVITY_TYPE, ACTIVITY_DATE,
-                CONTACT_OUTCOME, IS_RIGHT_PARTY_CONTACT, NOTES, SOURCE_SYSTEM
+              ACTIVITY_ID,
+              CUSTOMER_ID,
+              COMPANY_CODE,
+              ACTIVITY_TYPE,
+              ACTIVITY_DATE,
+              CONTACT_OUTCOME,
+              IS_RIGHT_PARTY_CONTACT,
+              NOTES,
+              SOURCE_SYSTEM
             )
-            VALUES (
-                '{activity_id}', '{safe_cust}', '{safe_co}', '{activity_type}', CURRENT_DATE(),
-                'RPC', TRUE, '{notes}', 'ORDERLENS_AGENT'
-            )
+            VALUES
+              (
+                '{activity_id}',
+                '{safe_cust}',
+                '{safe_co}',
+                '{activity_type}',
+                CAST(GETDATE() AS DATE),
+                'RPC',
+                1,
+                '{notes}',
+                'ORDERLENS_AGENT'
+              )
         """)
         promote_staging_to_mart("collections")
         return {"ok": True, "message": f"Activity {activity_id} logged for {customer_id}", "activity_id": activity_id}
@@ -3047,38 +3298,51 @@ def cash_application_agent_queue(customer_id: str | None = None) -> list[dict]:
         cust_filter = f" AND p.CUSTOMER_ID = '{safe_cust}'"
     row_limit = 200 if customer_id else 50
     sql = f"""
-    SELECT
-        p.PAYMENT_ID AS payment_id,
-        p.CUSTOMER_ID AS customer_id,
-        COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
-        p.INVOICE_ID AS invoice_id,
-        p.COMPANY_CODE AS company_code,
-        p.PAYMENT_METHOD AS payment_method,
-        p.PAYMENT_AMOUNT_USD AS payment_amount_usd,
-        p.IS_PARTIAL AS is_partial,
-        p.PAYMENT_DATE::VARCHAR AS payment_date,
-        p.CLEARING_DATE::VARCHAR AS clearing_date,
-        DATEDIFF('day', p.PAYMENT_DATE, CURRENT_DATE()) AS days_unapplied,
-        CASE
-            WHEN p.CLEARING_DATE IS NULL THEN 'UNAPPLIED'
-            WHEN p.IS_PARTIAL THEN 'PARTIAL'
+        SELECT
+        TOP {row_limit}
+          p.PAYMENT_ID AS payment_id,
+          p.CUSTOMER_ID AS customer_id,
+          COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
+          p.INVOICE_ID AS invoice_id,
+          p.COMPANY_CODE AS company_code,
+          p.PAYMENT_METHOD AS payment_method,
+          p.PAYMENT_AMOUNT_USD AS payment_amount_usd,
+          p.IS_PARTIAL AS is_partial,
+          CONVERT(VARCHAR(30), p.PAYMENT_DATE, 23) AS payment_date,
+          CONVERT(VARCHAR(30), p.CLEARING_DATE, 23) AS clearing_date,
+          DATEDIFF(DAY, p.PAYMENT_DATE, CAST(GETDATE() AS DATE)) AS days_unapplied,
+          CASE
+            WHEN p.CLEARING_DATE IS NULL
+            THEN 'UNAPPLIED'
+            WHEN p.IS_PARTIAL <> 0
+            THEN 'PARTIAL'
             ELSE 'EXCEPTION'
-        END AS exception_type,
-        p.PAYMENT_AMOUNT_USD * (1 + DATEDIFF('day', p.PAYMENT_DATE, CURRENT_DATE()) / 7.0) AS priority_score
-    FROM {BM}.payment_vw p
-    LEFT JOIN {BM}.customer_vw cu
-      ON cu.CUSTOMER_ID = p.CUSTOMER_ID
-     AND cu.COMPANY_CODE = p.COMPANY_CODE
-    LEFT JOIN (
-        SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
-        FROM {BM}.customer_vw
-        GROUP BY CUSTOMER_ID
-    ) cu_any
-      ON cu_any.CUSTOMER_ID = p.CUSTOMER_ID
-    WHERE (p.CLEARING_DATE IS NULL OR p.IS_PARTIAL = TRUE)
-      {cust_filter}
-    ORDER BY priority_score DESC
-    LIMIT {row_limit}
+          END AS exception_type,
+          p.PAYMENT_AMOUNT_USD * (
+            1 + CAST(DATEDIFF(DAY, p.PAYMENT_DATE, CAST(GETDATE() AS DATE)) AS FLOAT) / 7.0
+          ) AS priority_score
+        FROM {BM}.payment_vw AS p
+        LEFT JOIN {BM}.customer_vw AS cu
+          ON cu.CUSTOMER_ID = p.CUSTOMER_ID AND cu.COMPANY_CODE = p.COMPANY_CODE
+        LEFT JOIN (
+          SELECT
+            CUSTOMER_ID AS CUSTOMER_ID,
+            MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
+          FROM {BM}.customer_vw
+          GROUP BY
+            CUSTOMER_ID
+        ) AS cu_any
+          ON cu_any.CUSTOMER_ID = p.CUSTOMER_ID
+        WHERE
+          (
+            p.CLEARING_DATE IS NULL OR p.IS_PARTIAL = 1
+          ) {cust_filter}
+        ORDER BY
+          CASE WHEN p.PAYMENT_AMOUNT_USD * (
+            1 + CAST(DATEDIFF(DAY, p.PAYMENT_DATE, CAST(GETDATE() AS DATE)) AS FLOAT) / 7.0
+          ) IS NULL THEN 1 ELSE 0 END DESC, p.PAYMENT_AMOUNT_USD * (
+            1 + CAST(DATEDIFF(DAY, p.PAYMENT_DATE, CAST(GETDATE() AS DATE)) AS FLOAT) / 7.0
+          ) DESC
     """
     rows = run_query(sql)
     rows = _enrich_copilot_rows(rows)
@@ -3094,21 +3358,26 @@ def cash_application_match_candidates(customer_id: str, company_code: str | None
         co_filter = f" AND ar.COMPANY_CODE = '{safe_co}'"
     return run_query(f"""
         SELECT
-            ar.INVOICE_ID AS invoice_id,
-            ar.OPEN_AMOUNT_USD AS open_amount_usd,
-            ar.DAYS_PAST_DUE AS days_past_due,
-            ar.AGING_BUCKET AS aging_bucket,
-            ar.DUE_DATE::VARCHAR AS due_date,
-            ABS(ar.OPEN_AMOUNT_USD - {float(payment_amount)}) AS amount_delta,
-            CASE
-                WHEN ABS(ar.OPEN_AMOUNT_USD - {float(payment_amount)}) <= 50 THEN 'EXACT'
-                WHEN ar.OPEN_AMOUNT_USD > {float(payment_amount)} THEN 'UNDERPAY'
-                ELSE 'OVERPAY'
-            END AS match_type
-        FROM {BM}.ar_open_item_vw ar
-        WHERE ar.CUSTOMER_ID = '{safe_cust}' {co_filter}
-        ORDER BY amount_delta ASC, ar.DAYS_PAST_DUE DESC
-        LIMIT 25
+        TOP 25
+          ar.INVOICE_ID AS invoice_id,
+          ar.OPEN_AMOUNT_USD AS open_amount_usd,
+          ar.DAYS_PAST_DUE AS days_past_due,
+          ar.AGING_BUCKET AS aging_bucket,
+          CONVERT(VARCHAR(30), ar.DUE_DATE, 23) AS due_date,
+          ABS(ar.OPEN_AMOUNT_USD - {float(payment_amount)}) AS amount_delta,
+          CASE
+            WHEN ABS(ar.OPEN_AMOUNT_USD - {float(payment_amount)}) <= 50
+            THEN 'EXACT'
+            WHEN ar.OPEN_AMOUNT_USD > {float(payment_amount)}
+            THEN 'UNDERPAY'
+            ELSE 'OVERPAY'
+          END AS match_type
+        FROM {BM}.ar_open_item_vw AS ar
+        WHERE
+          ar.CUSTOMER_ID = '{safe_cust}' {co_filter}
+        ORDER BY
+          CASE WHEN ABS(ar.OPEN_AMOUNT_USD - {float(payment_amount)}) IS NULL THEN 1 ELSE 0 END, ABS(ar.OPEN_AMOUNT_USD - {float(payment_amount)}) ASC,
+          CASE WHEN ar.DAYS_PAST_DUE IS NULL THEN 1 ELSE 0 END DESC, ar.DAYS_PAST_DUE DESC
     """)
 
 
@@ -3119,12 +3388,20 @@ def cash_application_recommendation(payload: dict) -> dict:
 
     safe_id = payment_id.replace("'", "''")
     rows = run_query(f"""
-        SELECT PAYMENT_ID, CUSTOMER_ID, INVOICE_ID, COMPANY_CODE, PAYMENT_METHOD,
-               PAYMENT_AMOUNT_USD, PAYMENT_DATE::VARCHAR AS payment_date,
-               CLEARING_DATE, IS_PARTIAL
+        SELECT
+        TOP 1
+          PAYMENT_ID,
+          CUSTOMER_ID,
+          INVOICE_ID,
+          COMPANY_CODE,
+          PAYMENT_METHOD,
+          PAYMENT_AMOUNT_USD,
+          CONVERT(VARCHAR(30), PAYMENT_DATE, 23) AS payment_date,
+          CLEARING_DATE,
+          IS_PARTIAL
         FROM {BM}.payment_vw
-        WHERE PAYMENT_ID = '{safe_id}'
-        LIMIT 1
+        WHERE
+          PAYMENT_ID = '{safe_id}'
     """)
     if not rows:
         return {"response": f"Payment {payment_id} not found."}
@@ -3240,10 +3517,16 @@ def cash_application_apply(payload: dict) -> dict:
     safe_inv = invoice_id.replace("'", "''")
 
     pay_rows = run_query(f"""
-        SELECT PAYMENT_ID, CUSTOMER_ID, COMPANY_CODE, PAYMENT_AMOUNT_USD, IS_PARTIAL
+        SELECT
+        TOP 1
+          PAYMENT_ID,
+          CUSTOMER_ID,
+          COMPANY_CODE,
+          PAYMENT_AMOUNT_USD,
+          IS_PARTIAL
         FROM {BM}.payment_vw
-        WHERE PAYMENT_ID = '{safe_pay}'
-        LIMIT 1
+        WHERE
+          PAYMENT_ID = '{safe_pay}'
     """)
     if not pay_rows:
         return {"ok": False, "message": f"Payment {payment_id} not found"}
@@ -3254,10 +3537,15 @@ def cash_application_apply(payload: dict) -> dict:
     pay_amount = float(pay.get("payment_amount_usd") or 0)
 
     inv_rows = run_query(f"""
-        SELECT INVOICE_ID, CUSTOMER_ID, COMPANY_CODE, OPEN_AMOUNT_USD
+        SELECT
+        TOP 1
+          INVOICE_ID,
+          CUSTOMER_ID,
+          COMPANY_CODE,
+          OPEN_AMOUNT_USD
         FROM {BM}.ar_open_item_vw
-        WHERE INVOICE_ID = '{safe_inv}'
-        LIMIT 1
+        WHERE
+          INVOICE_ID = '{safe_inv}'
     """)
     if not inv_rows:
         return {"ok": False, "message": f"Open invoice {invoice_id} not found"}
@@ -3273,13 +3561,9 @@ def cash_application_apply(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {LK_RV}.payment
-            SET INVOICE_ID = '{safe_inv}',
-                CLEARING_DATE = CURRENT_DATE(),
-                IS_PARTIAL = {str(is_partial).upper()},
-                POSTING_TIMESTAMP = CURRENT_TIMESTAMP(),
-                UPDATED_AT = CURRENT_TIMESTAMP()
-            WHERE PAYMENT_ID = '{safe_pay}'
+            UPDATE {LK_RV}.payment SET INVOICE_ID = '{safe_inv}', CLEARING_DATE = CAST(GETDATE() AS DATE), IS_PARTIAL = {1 if is_partial else 0}, POSTING_TIMESTAMP = GETDATE(), UPDATED_AT = GETDATE()
+            WHERE
+              PAYMENT_ID = '{safe_pay}'
         """)
         promote_staging_to_mart("payment")
         status = "partially applied" if is_partial else "fully applied"
@@ -3304,8 +3588,8 @@ def dispute_agent_queue(customer_id: str | None = None) -> list[dict]:
         cust_filter = f" AND d.CUSTOMER_ID = '{safe_cust}'"
     row_limit = 200 if customer_id else 50
     sql = f"""
-    WITH ranked AS (
-        SELECT
+        WITH ranked AS (
+          SELECT
             d.DISPUTE_ID AS dispute_id,
             d.CUSTOMER_ID AS customer_id,
             COALESCE(cu.CUSTOMER_NAME, cu_any.CUSTOMER_NAME) AS customer_name,
@@ -3314,40 +3598,56 @@ def dispute_agent_queue(customer_id: str | None = None) -> list[dict]:
             d.DISPUTE_REASON AS dispute_reason,
             d.DISPUTE_STATUS AS dispute_status,
             d.DISPUTED_AMOUNT AS disputed_amount,
-            d.OPENED_DATE::VARCHAR AS opened_date,
-            DATEDIFF('day', d.OPENED_DATE, CURRENT_DATE()) AS resolution_days,
+            CONVERT(VARCHAR(30), d.OPENED_DATE, 23) AS opened_date,
+            DATEDIFF(DAY, d.OPENED_DATE, CAST(GETDATE() AS DATE)) AS resolution_days,
             d.OWNER AS owner,
-            d.DISPUTED_AMOUNT * (1 + DATEDIFF('day', d.OPENED_DATE, CURRENT_DATE()) / 30.0) AS priority_score,
+            d.DISPUTED_AMOUNT * (
+              1 + CAST(DATEDIFF(DAY, d.OPENED_DATE, CAST(GETDATE() AS DATE)) AS FLOAT) / 30.0
+            ) AS priority_score,
             CASE
-                WHEN DATEDIFF('day', d.OPENED_DATE, CURRENT_DATE()) >= 30 OR d.DISPUTED_AMOUNT > 50000 THEN 'ACT_NOW'
-                WHEN DATEDIFF('day', d.OPENED_DATE, CURRENT_DATE()) >= 14 THEN 'PLAN_THIS_WEEK'
-                ELSE 'MONITOR'
+              WHEN DATEDIFF(DAY, d.OPENED_DATE, CAST(GETDATE() AS DATE)) >= 30
+              OR d.DISPUTED_AMOUNT > 50000
+              THEN 'ACT_NOW'
+              WHEN DATEDIFF(DAY, d.OPENED_DATE, CAST(GETDATE() AS DATE)) >= 14
+              THEN 'PLAN_THIS_WEEK'
+              ELSE 'MONITOR'
             END AS action_group,
-            ROW_NUMBER() OVER (
-                PARTITION BY d.DISPUTE_ID
-                ORDER BY d.DISPUTED_AMOUNT DESC NULLS LAST, d.OPENED_DATE DESC NULLS LAST
-            ) AS rn
-        FROM {BM}.dispute_vw d
-        LEFT JOIN {BM}.customer_vw cu
-          ON cu.CUSTOMER_ID = d.CUSTOMER_ID
-         AND cu.COMPANY_CODE = d.COMPANY_CODE
-        LEFT JOIN (
-            SELECT CUSTOMER_ID, MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
+            ROW_NUMBER() OVER (PARTITION BY d.DISPUTE_ID ORDER BY d.DISPUTED_AMOUNT DESC, d.OPENED_DATE DESC) AS rn
+          FROM {BM}.dispute_vw AS d
+          LEFT JOIN {BM}.customer_vw AS cu
+            ON cu.CUSTOMER_ID = d.CUSTOMER_ID AND cu.COMPANY_CODE = d.COMPANY_CODE
+          LEFT JOIN (
+            SELECT
+              CUSTOMER_ID AS CUSTOMER_ID,
+              MAX(CUSTOMER_NAME) AS CUSTOMER_NAME
             FROM {BM}.customer_vw
-            GROUP BY CUSTOMER_ID
-        ) cu_any
-          ON cu_any.CUSTOMER_ID = d.CUSTOMER_ID
-        WHERE UPPER(COALESCE(d.DISPUTE_STATUS, '')) NOT IN ('RESOLVED', 'CLOSED', 'CANCELLED', 'WRITTEN_OFF')
-          {cust_filter}
-    )
-    SELECT
-        dispute_id, customer_id, customer_name, invoice_id, company_code, dispute_reason,
-        dispute_status, disputed_amount, opened_date, resolution_days, owner,
-        priority_score, action_group
-    FROM ranked
-    WHERE rn = 1
-    ORDER BY priority_score DESC
-    LIMIT {row_limit}
+            GROUP BY
+              CUSTOMER_ID
+          ) AS cu_any
+            ON cu_any.CUSTOMER_ID = d.CUSTOMER_ID
+          WHERE
+            NOT UPPER(COALESCE(d.DISPUTE_STATUS, '')) IN ('RESOLVED', 'CLOSED', 'CANCELLED', 'WRITTEN_OFF') {cust_filter}
+        )
+        SELECT
+        TOP {row_limit}
+          dispute_id,
+          customer_id,
+          customer_name,
+          invoice_id,
+          company_code,
+          dispute_reason,
+          dispute_status,
+          disputed_amount,
+          opened_date,
+          resolution_days,
+          owner,
+          priority_score,
+          action_group
+        FROM ranked
+        WHERE
+          rn = 1
+        ORDER BY
+          CASE WHEN priority_score IS NULL THEN 1 ELSE 0 END DESC, priority_score DESC
     """
     rows = run_query(sql)
     rows = _enrich_copilot_rows(rows)
@@ -3365,11 +3665,20 @@ def dispute_agent_recommendation(payload: dict) -> dict:
 
     safe_id = dispute_id.replace("'", "''")
     rows = run_query(f"""
-        SELECT DISPUTE_ID, CUSTOMER_ID, INVOICE_ID, COMPANY_CODE, DISPUTE_REASON,
-               DISPUTE_STATUS, DISPUTED_AMOUNT, OPENED_DATE::VARCHAR AS opened_date, OWNER
+        SELECT
+        TOP 1
+          DISPUTE_ID,
+          CUSTOMER_ID,
+          INVOICE_ID,
+          COMPANY_CODE,
+          DISPUTE_REASON,
+          DISPUTE_STATUS,
+          DISPUTED_AMOUNT,
+          CONVERT(VARCHAR(30), OPENED_DATE, 23) AS opened_date,
+          OWNER
         FROM {BM}.dispute_vw
-        WHERE DISPUTE_ID = '{safe_id}'
-        LIMIT 1
+        WHERE
+          DISPUTE_ID = '{safe_id}'
     """)
     if not rows:
         return {"response": f"Dispute {dispute_id} not found."}
@@ -3383,10 +3692,15 @@ def dispute_agent_recommendation(payload: dict) -> dict:
     action_group = str(payload.get("action_group") or "ACT_NOW")
 
     inv_rows = run_query(f"""
-        SELECT INVOICE_ID, GROSS_AMOUNT, INVOICE_STATUS, INVOICE_DATE::VARCHAR AS invoice_date
+        SELECT
+        TOP 1
+          INVOICE_ID,
+          GROSS_AMOUNT,
+          INVOICE_STATUS,
+          CONVERT(VARCHAR(30), INVOICE_DATE, 23) AS invoice_date
         FROM {BM}.ar_invoice_vw
-        WHERE INVOICE_ID = '{invoice_id.replace("'", "''")}'
-        LIMIT 1
+        WHERE
+          INVOICE_ID = '{invoice_id.replace("'", "''")}'
     """) if invoice_id else []
     inv = inv_rows[0] if inv_rows else {}
 
@@ -3518,11 +3832,9 @@ def dispute_agent_update_status(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {LK_RV}.dispute_case
-            SET DISPUTE_STATUS = '{new_status}',
-                OWNER = COALESCE(OWNER, 'OrderToCash Agent'),
-                UPDATED_AT = CURRENT_TIMESTAMP()
-            WHERE DISPUTE_ID = '{safe_id}'
+            UPDATE {LK_RV}.dispute_case SET DISPUTE_STATUS = '{new_status}', OWNER = COALESCE(OWNER, 'OrderToCash Agent'), UPDATED_AT = GETDATE()
+            WHERE
+              DISPUTE_ID = '{safe_id}'
         """)
         promote_staging_to_mart("collections")
         return {"ok": True, "message": f"Dispute {dispute_id} moved to {new_status}. {notes}"}
@@ -3550,13 +3862,9 @@ def dispute_agent_resolve(payload: dict) -> dict:
 
     try:
         run_execute(f"""
-            UPDATE {LK_RV}.dispute_case
-            SET DISPUTE_STATUS = '{status}',
-                RESOLVED_AMOUNT = {resolved_amount},
-                RESOLVED_DATE = CURRENT_DATE(),
-                RESOLUTION_DAYS = DATEDIFF('day', OPENED_DATE, CURRENT_DATE()),
-                UPDATED_AT = CURRENT_TIMESTAMP()
-            WHERE DISPUTE_ID = '{safe_id}'
+            UPDATE {LK_RV}.dispute_case SET DISPUTE_STATUS = '{status}', RESOLVED_AMOUNT = {resolved_amount}, RESOLVED_DATE = CAST(GETDATE() AS DATE), RESOLUTION_DAYS = DATEDIFF(DAY, OPENED_DATE, CAST(GETDATE() AS DATE)), UPDATED_AT = GETDATE()
+            WHERE
+              DISPUTE_ID = '{safe_id}'
         """)
         promote_staging_to_mart("collections")
         return {
