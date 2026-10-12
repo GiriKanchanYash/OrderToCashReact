@@ -165,13 +165,13 @@ def save_question_history(question: str, qtype: str = "custom") -> None:
         safe_q = question.replace("'", "''")
         updated = onelake.update(
             "information_mart.genie_question_history",
-            {"NORMALIZED_QUERY": question, "USER": user},
+            {"NORMALIZED_QUERY": question, "USER_NAME": user},
             lambda r: {"FREQUENCY": int(r.get("FREQUENCY") or 0) + 1, "LAST_ASKED_AT": onelake.now_utc(), "PERSONA": "ORDERLENS"},
         )
         if not updated:
             onelake.append(
                 "information_mart.genie_question_history",
-                {"NORMALIZED_QUERY": question, "TYPE": qtype, "USER": user, "FREQUENCY": 1, "PERSONA": "ORDERLENS"},
+                {"NORMALIZED_QUERY": question, "TYPE": qtype, "USER_NAME": user, "FREQUENCY": 1, "PERSONA": "ORDERLENS"},
                 fill_now=("LAST_ASKED_AT", "CREATED_AT"),
             )
     except Exception:
@@ -234,7 +234,7 @@ def load_frequent_questions() -> list[dict]:
               FREQUENCY
             FROM {LK_IM}.genie_question_history
             WHERE
-              [USER] = '{user}'
+              USER_NAME = '{user}'
               AND (
                 PERSONA = 'ORDERLENS' OR PERSONA IS NULL
               )
