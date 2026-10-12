@@ -26,6 +26,7 @@ import decimal
 import logging
 import os
 import threading
+import time
 import uuid
 
 try:
@@ -41,6 +42,10 @@ import FabicApp.db  # noqa: F401  -- loads the project .env before the settings 
 log = logging.getLogger("o2c.fabric.onelake")
 
 TABLES_URI = os.getenv("FABRIC_ONELAKE_TABLES_URI", "").strip().strip('"').rstrip("/")
+# Console logging of Lakehouse writes: "values" (default) logs every column value written,
+# "summary" logs only table / operation / row counts, "off" disables write logging.
+LOG_MODE = os.getenv("FABRIC_ONELAKE_LOG", "values").strip().strip('"').lower()
+LAKEHOUSE_NAME = os.getenv("FABRIC_LAKEHOUSE_DATABASE", "").strip().strip('"') or "Lakehouse"
 
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -95,6 +100,8 @@ def _open(table: str):
     except OneLakeWriteError:
         raise
     except Exception as exc:
+        log.error("OneLake cannot open %s.%s at %s: %s", os.getenv("FABRIC_LAKEHOUSE_DATABASE", "Lakehouse").strip().strip('"'),
+                  table, _uri(table), exc)
         raise OneLakeWriteError(f"cannot open Lakehouse table {table}: {exc}") from exc
     return dtable, pa.schema(dtable.schema().to_arrow())
 
@@ -184,6 +191,52 @@ def _literal(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+# --------------------------------------------------------------------------- console logging
+
+def _fmt(value) -> str:
+    """Readable value for the console: strings quoted, NULL for None, ISO dates."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, str):
+        return repr(value)
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    return str(value)
+
+
+def _block(pairs) -> str:
+    pairs = list(pairs)
+    if not pairs:
+        return ""
+    width = max(len(k) for k, _ in pairs)
+    return "\n" + "\n".join(f"      {k.ljust(width)} = {v}" for k, v in pairs)
+
+
+def _where_text(where: dict) -> str:
+    return " AND ".join(f"{k} = {_fmt(v)}" for k, v in where.items())
+
+
+def _version(dtable) -> str:
+    try:
+        dtable.update_incremental()
+        return str(dtable.version())
+    except Exception:
+        return "?"
+
+
+def _log_ok(op: str, table: str, detail: str, started: float, dtable, counts: str) -> None:
+    if LOG_MODE == "off":
+        return
+    ms = (time.perf_counter() - started) * 1000
+    body = detail if LOG_MODE == "values" else ""
+    log.info("OneLake %s %s.%s%s\n      -> committed: %s | table version %s | %.0f ms",
+             op, LAKEHOUSE_NAME, table, body, counts, _version(dtable), ms)
+
+
+def _log_fail(op: str, table: str, detail: str, exc: Exception) -> None:
+    log.error("OneLake %s %s.%s FAILED: %s%s", op, LAKEHOUSE_NAME, table, exc, detail if LOG_MODE != "off" else "")
+
+
 # --------------------------------------------------------------------------- public API
 
 def append(table: str, row: dict, *, auto_id: str | None = None, fill_now: tuple[str, ...] = ()) -> dict:
@@ -193,17 +246,20 @@ def append(table: str, row: dict, *, auto_id: str | None = None, fill_now: tuple
               text columns) -- Delta tables have no IDENTITY / AUTOINCREMENT.
     fill_now: columns to set to the current UTC time when the table has them and the
               row does not set them (the defaults Snowflake applied, e.g. CREATED_AT).
-    Returns the row as written.
+    Returns the row as written. Logs every column value written to the console.
     """
+    started = time.perf_counter()
     with _lock(table):
         dtable, schema = _open(table)
         names = _resolve(schema, table, row)
         values = {names[k]: v for k, v in row.items()}
         lower = {f.name.lower(): f.name for f in schema}
+        generated = []
         for col in fill_now:
             real = lower.get(col.lower())
             if real and values.get(real) is None:
                 values[real] = now_utc()
+                generated.append(real)
         if auto_id:
             real = _resolve(schema, table, [auto_id])[auto_id]
             if values.get(real) is None:
@@ -214,11 +270,17 @@ def append(table: str, row: dict, *, auto_id: str | None = None, fill_now: tuple
                     values[real] = int(current or 0) + 1
                 else:
                     values[real] = uuid.uuid4().hex
+                generated.append(real)
         record = {f.name: _coerce(values.get(f.name), f.type) for f in schema}
+        detail = _block(
+            (name + (" (generated)" if name in generated else ""), _fmt(v)) for name, v in record.items()
+        )
         try:
             write_deltalake(dtable, pa.Table.from_pylist([record], schema=schema), mode="append")
         except Exception as exc:
+            _log_fail("INSERT", table, detail, exc)
             raise OneLakeWriteError(f"append to {table} failed: {exc}") from exc
+        _log_ok("INSERT", table, detail, started, dtable, "1 row inserted")
         return record
 
 
@@ -228,7 +290,9 @@ def update(table: str, where: dict, changes) -> int:
     changes: dict of column -> new value, or a function(row) -> dict for values that
              depend on the current row (e.g. COALESCE(OWNER, ...), DATEDIFF from OPENED_DATE).
     Returns the number of rows updated (0 if none matched, like an UPDATE with no hits).
+    Logs the WHERE condition and every changed column as old -> new.
     """
+    started = time.perf_counter()
     with _lock(table):
         dtable, schema = _open(table)
         keys = _resolve(schema, table, where)
@@ -239,18 +303,31 @@ def update(table: str, where: dict, changes) -> int:
         )
         current = pa.table(QueryBuilder().register("t", dtable).execute(f"SELECT * FROM t WHERE {cond}").read_all())
         if current.num_rows == 0:
+            if LOG_MODE != "off":
+                log.info("OneLake UPDATE %s.%s WHERE %s\n      -> no matching rows, nothing changed",
+                         LAKEHOUSE_NAME, table, _where_text(where))
             return 0
-        rows, seen = [], set()
+        rows, seen, detail_lines = [], set(), []
         for r in current.to_pylist():
             key = tuple(r[keys[k]] for k in where)
             if key in seen:  # duplicates in the target are all updated by one source row
                 continue
             seen.add(key)
+            before = {f.name: _coerce(r.get(f.name), f.type) for f in schema}
             delta = changes(_Row(r)) if callable(changes) else changes
             names = _resolve(schema, table, delta)
             for k, v in delta.items():
                 r[names[k]] = v
-            rows.append({f.name: _coerce(r.get(f.name), f.type) for f in schema})
+            after = {f.name: _coerce(r.get(f.name), f.type) for f in schema}
+            rows.append(after)
+            changed = [(c, f"{_fmt(before[c])} -> {_fmt(after[c])}") for c in after if before[c] != after[c]]
+            unchanged = [names[k] for k in delta if before[names[k]] == after[names[k]]]
+            if len(seen) > 1:
+                detail_lines.append(("--- row", ", ".join(f"{keys[k]}={_fmt(r[keys[k]])}" for k in where)))
+            detail_lines += changed or [("(no column values changed)", "")]
+            if unchanged:
+                detail_lines.append(("(already set, kept)", ", ".join(unchanged)))
+        detail = f" WHERE {_where_text(where)} ({current.num_rows} row(s) matched)" + _block(detail_lines)
         source = pa.Table.from_pylist(rows, schema=schema)
         predicate = " AND ".join(f't."{keys[k]}" = s."{keys[k]}"' for k in where)
         try:
@@ -258,19 +335,26 @@ def update(table: str, where: dict, changes) -> int:
                    .when_matched_update_all()
                    .execute())
         except Exception as exc:
+            _log_fail("UPDATE", table, detail, exc)
             raise OneLakeWriteError(f"update of {table} failed: {exc}") from exc
+        _log_ok("UPDATE", table, detail, started, dtable, f"{current.num_rows} row(s) updated")
         return current.num_rows
 
 
 def delete(table: str, where: dict) -> None:
-    """DELETE rows matching all `where` equalities."""
+    """DELETE rows matching all `where` equalities. Logs the condition and rows deleted."""
+    started = time.perf_counter()
     with _lock(table):
         dtable, schema = _open(table)
         keys = _resolve(schema, table, where)
         predicate = " AND ".join(
             f'"{keys[k]}" = {_literal(_coerce(v, schema.field(keys[k]).type))}' for k, v in where.items()
         )
+        detail = f" WHERE {_where_text(where)}"
         try:
-            dtable.delete(predicate)
+            metrics = dtable.delete(predicate) or {}
         except Exception as exc:
+            _log_fail("DELETE", table, detail, exc)
             raise OneLakeWriteError(f"delete from {table} failed: {exc}") from exc
+        deleted = metrics.get("num_deleted_rows", "?")
+        _log_ok("DELETE", table, detail, started, dtable, f"{deleted} row(s) deleted")
