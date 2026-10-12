@@ -13,6 +13,7 @@ import uuid
 
 import requests
 
+from FabicApp import onelake
 from FabicApp.db import BM, DB, LK_AGENT, LK_IM, LK_RV, SCHEMA, get_connection, promote_staging_to_mart, run_query, run_query_on_conn
 from FabicApp.services import azure_llm, fabric_analyst
 from FabicApp.services.billing_block_catalog import billing_problem_summary, block_scenario_lines
@@ -162,22 +163,17 @@ def save_question_history(question: str, qtype: str = "custom") -> None:
     user = get_current_user()
     try:
         safe_q = question.replace("'", "''")
-        run_query(f"""
-            MERGE INTO {LK_IM}.genie_question_history AS t
-            USING (
-              SELECT
-                '{safe_q}' AS NORMALIZED_QUERY,
-                '{qtype}' AS TYPE,
-                '{user}' AS [USER],
-                'ORDERLENS' AS PERSONA
-            ) AS s
-            ON t.NORMALIZED_QUERY = s.NORMALIZED_QUERY AND t.[USER] = s.[USER]
-            WHEN MATCHED THEN UPDATE SET
-              FREQUENCY = t.FREQUENCY + 1,
-              LAST_ASKED_AT = GETDATE(),
-              PERSONA = 'ORDERLENS'
-            WHEN NOT MATCHED THEN INSERT (NORMALIZED_QUERY, TYPE, [USER], FREQUENCY, PERSONA) VALUES (s.NORMALIZED_QUERY, s.TYPE, s.[USER], 1, s.PERSONA);
-        """)
+        updated = onelake.update(
+            "information_mart.genie_question_history",
+            {"NORMALIZED_QUERY": question, "USER": user},
+            lambda r: {"FREQUENCY": int(r.get("FREQUENCY") or 0) + 1, "LAST_ASKED_AT": onelake.now_utc(), "PERSONA": "ORDERLENS"},
+        )
+        if not updated:
+            onelake.append(
+                "information_mart.genie_question_history",
+                {"NORMALIZED_QUERY": question, "TYPE": qtype, "USER": user, "FREQUENCY": 1, "PERSONA": "ORDERLENS"},
+                fill_now=("LAST_ASKED_AT", "CREATED_AT"),
+            )
     except Exception:
         log.warning("Could not save question history", exc_info=True)
 
@@ -209,17 +205,12 @@ def save_insight(title: str, question: str, sql_text: str = "") -> None:
         safe_title = title.replace("'", "''")
         safe_q = question.replace("'", "''")
         safe_sql = sql_text.replace("'", "''") if sql_text else ""
-        run_query(f"""
-            INSERT INTO {LK_IM}.saved_insights (
-              CREATED_BY,
-              PAGE,
-              TITLE,
-              QUESTION,
-              SQL_TEXT
-            )
-            VALUES
-              ('{user}', '{_COPILOT_PAGE}', '{safe_title}', '{safe_q}', '{safe_sql}')
-        """)
+        onelake.append(
+            "information_mart.saved_insights",
+            {"CREATED_BY": user, "PAGE": _COPILOT_PAGE, "TITLE": title, "QUESTION": question, "SQL_TEXT": sql_text or ""},
+            auto_id="INSIGHT_ID",
+            fill_now=("CREATED_AT",),
+        )
     except Exception:
         log.warning("Could not save insight", exc_info=True)
 
@@ -227,11 +218,7 @@ def save_insight(title: str, question: str, sql_text: str = "") -> None:
 def delete_insight(insight_id: int) -> None:
     user = get_current_user()
     try:
-        run_query(f"""
-            DELETE FROM {LK_IM}.saved_insights
-            WHERE
-              INSIGHT_ID = {insight_id} AND CREATED_BY = '{user}'
-        """)
+        onelake.delete("information_mart.saved_insights", {"INSIGHT_ID": insight_id, "CREATED_BY": user})
     except Exception:
         log.warning("Could not delete insight", exc_info=True)
 
@@ -2344,8 +2331,6 @@ OrderLens Billing Agent
 
 
 def billing_agent_mark_reviewed(payload: dict) -> dict:
-    from FabicApp.db import run_execute
-
     sales_order_id = str(payload.get("sales_order_id") or "").strip()
     customer_id = str(payload.get("customer_id") or "").strip()
     company_code = str(payload.get("company_code") or "1000").strip()
@@ -2369,43 +2354,24 @@ def billing_agent_mark_reviewed(payload: dict) -> dict:
         """)
         next_seq = int(seq_rows[0].get("next_seq") or seq_rows[0].get("NEXT_SEQ") or 1)
 
-        run_execute(f"""
-            INSERT INTO {LK_RV}.order_status_history (
-              STATUS_EVENT_ID,
-              SALES_ORDER_ID,
-              CUSTOMER_ID,
-              COMPANY_CODE,
-              STATUS_SEQ,
-              LIFECYCLE_AREA,
-              ORDER_STATUS,
-              STATUS_DATE,
-              STATUS_TIMESTAMP,
-              CHANGED_BY,
-              IS_LATEST_STATUS,
-              NOTES,
-              CREATED_AT,
-              UPDATED_AT,
-              SOURCE_SYSTEM
-            )
-            VALUES
-              (
-                '{event_id}',
-                '{safe_so}',
-                '{safe_cust}',
-                '{safe_co}',
-                {next_seq},
-                'BILLING',
-                'UNDER_BILLING_REVIEW',
-                CAST(GETDATE() AS DATE),
-                GETDATE(),
-                'ORDERLENS_BILLING_AGENT',
-                1,
-                '{notes}',
-                GETDATE(),
-                GETDATE(),
-                'ORDERLENS_AGENT'
-              )
-        """)
+        now = onelake.now_utc()
+        onelake.append("raw_vault.order_status_history", {
+            "STATUS_EVENT_ID": event_id,
+            "SALES_ORDER_ID": sales_order_id,
+            "CUSTOMER_ID": customer_id,
+            "COMPANY_CODE": company_code,
+            "STATUS_SEQ": next_seq,
+            "LIFECYCLE_AREA": "BILLING",
+            "ORDER_STATUS": "UNDER_BILLING_REVIEW",
+            "STATUS_DATE": now.date(),
+            "STATUS_TIMESTAMP": now,
+            "CHANGED_BY": "ORDERLENS_BILLING_AGENT",
+            "IS_LATEST_STATUS": 1,
+            "NOTES": str(payload.get("notes") or "Billing blocker reviewed in OrderLens Billing Agent"),
+            "CREATED_AT": now,
+            "UPDATED_AT": now,
+            "SOURCE_SYSTEM": "ORDERLENS_AGENT",
+        })
         with _AGENT_CACHE_LOCK:
             _AGENT_CACHE.pop("billing_queue:v3", None)
         return {
@@ -2955,8 +2921,6 @@ def collections_agent_open_invoices(
 
 
 def collections_agent_log_ptp(payload: dict) -> dict:
-    from FabicApp.db import run_execute
-
     customer_id = str(payload.get("customer_id", "") or "").strip()
     company_code = str(payload.get("company_code") or "1000").strip()
     amount = float(payload.get("promised_amount") or 0)
@@ -2983,64 +2947,33 @@ def collections_agent_log_ptp(payload: dict) -> dict:
     ptp_id = f"PTP-{uuid.uuid4().hex[:8].upper()}"
 
     try:
-        run_execute(f"""
-            INSERT INTO {LK_RV}.collection_activity (
-              ACTIVITY_ID,
-              CUSTOMER_ID,
-              COMPANY_CODE,
-              ACTIVITY_TYPE,
-              ACTIVITY_DATE,
-              CONTACT_OUTCOME,
-              IS_RIGHT_PARTY_CONTACT,
-              NOTES,
-              SOURCE_SYSTEM
-            )
-            VALUES
-              (
-                '{activity_id}',
-                '{safe_cust}',
-                '{safe_co}',
-                'CALL',
-                CAST(GETDATE() AS DATE),
-                '{contact_outcome}',
-                {1 if is_rpc else 0},
-                '{safe_notes}',
-                'ORDERLENS_AGENT'
-              )
-        """)
+        onelake.append("raw_vault.collection_activity", {
+            "ACTIVITY_ID": activity_id,
+            "CUSTOMER_ID": customer_id,
+            "COMPANY_CODE": company_code,
+            "ACTIVITY_TYPE": "CALL",
+            "ACTIVITY_DATE": onelake.today_utc(),
+            "CONTACT_OUTCOME": contact_outcome,
+            "IS_RIGHT_PARTY_CONTACT": 1 if is_rpc else 0,
+            "NOTES": notes or f"PTP captured via OrderToCash Agent — ${amount:,.2f} by {pay_date}",
+            "SOURCE_SYSTEM": "ORDERLENS_AGENT",
+        })
 
         invoice_sql = f"'{safe_invoice}'" if safe_invoice else "NULL"
-        run_execute(f"""
-            INSERT INTO {LK_RV}.promise_to_pay (
-              PTP_ID,
-              CUSTOMER_ID,
-              COMPANY_CODE,
-              INVOICE_ID,
-              ACTIVITY_ID,
-              PROMISE_DATE,
-              PROMISED_PAY_DATE,
-              PROMISED_AMOUNT,
-              CURRENCY_CODE,
-              PTP_STATUS,
-              IS_KEPT,
-              SOURCE_SYSTEM
-            )
-            VALUES
-              (
-                '{ptp_id}',
-                '{safe_cust}',
-                '{safe_co}',
-                {invoice_sql},
-                '{activity_id}',
-                CAST(GETDATE() AS DATE),
-                CAST('{safe_date}' AS DATE),
-                {amount},
-                'USD',
-                'OPEN',
-                0,
-                'ORDERLENS_AGENT'
-              )
-        """)
+        onelake.append("raw_vault.promise_to_pay", {
+            "PTP_ID": ptp_id,
+            "CUSTOMER_ID": customer_id,
+            "COMPANY_CODE": company_code,
+            "INVOICE_ID": invoice_id or None,
+            "ACTIVITY_ID": activity_id,
+            "PROMISE_DATE": onelake.today_utc(),
+            "PROMISED_PAY_DATE": pay_date,
+            "PROMISED_AMOUNT": amount,
+            "CURRENCY_CODE": "USD",
+            "PTP_STATUS": "OPEN",
+            "IS_KEPT": 0,
+            "SOURCE_SYSTEM": "ORDERLENS_AGENT",
+        })
         promote_staging_to_mart("collections")
         return {
             "ok": True,
@@ -3249,31 +3182,17 @@ def collections_agent_mark_contacted(payload: dict) -> dict:
     safe_co = company_code.replace("'", "''")
 
     try:
-        run_query(f"""
-            INSERT INTO {LK_RV}.collection_activity (
-              ACTIVITY_ID,
-              CUSTOMER_ID,
-              COMPANY_CODE,
-              ACTIVITY_TYPE,
-              ACTIVITY_DATE,
-              CONTACT_OUTCOME,
-              IS_RIGHT_PARTY_CONTACT,
-              NOTES,
-              SOURCE_SYSTEM
-            )
-            VALUES
-              (
-                '{activity_id}',
-                '{safe_cust}',
-                '{safe_co}',
-                '{activity_type}',
-                CAST(GETDATE() AS DATE),
-                'RPC',
-                1,
-                '{notes}',
-                'ORDERLENS_AGENT'
-              )
-        """)
+        onelake.append("raw_vault.collection_activity", {
+            "ACTIVITY_ID": activity_id,
+            "CUSTOMER_ID": customer_id,
+            "COMPANY_CODE": company_code,
+            "ACTIVITY_TYPE": activity_type,
+            "ACTIVITY_DATE": onelake.today_utc(),
+            "CONTACT_OUTCOME": "RPC",
+            "IS_RIGHT_PARTY_CONTACT": 1,
+            "NOTES": str(payload.get("notes") or "Contact logged via OrderToCash Collections Agent"),
+            "SOURCE_SYSTEM": "ORDERLENS_AGENT",
+        })
         promote_staging_to_mart("collections")
         return {"ok": True, "message": f"Activity {activity_id} logged for {customer_id}", "activity_id": activity_id}
     except Exception as exc:
@@ -3502,8 +3421,6 @@ OrderToCash Cash Application Team"""
 
 
 def cash_application_apply(payload: dict) -> dict:
-    from FabicApp.db import run_execute
-
     payment_id = str(payload.get("payment_id", "") or "").strip()
     invoice_id = str(payload.get("invoice_id", "") or "").strip()
     notes = str(payload.get("notes") or "Applied via OrderToCash Cash Application Agent").replace("'", "''")
@@ -3560,11 +3477,14 @@ def cash_application_apply(payload: dict) -> dict:
     is_partial = pay_amount < open_amt * 0.995
 
     try:
-        run_execute(f"""
-            UPDATE {LK_RV}.payment SET INVOICE_ID = '{safe_inv}', CLEARING_DATE = CAST(GETDATE() AS DATE), IS_PARTIAL = {1 if is_partial else 0}, POSTING_TIMESTAMP = GETDATE(), UPDATED_AT = GETDATE()
-            WHERE
-              PAYMENT_ID = '{safe_pay}'
-        """)
+        now = onelake.now_utc()
+        onelake.update("raw_vault.payment", {"PAYMENT_ID": payment_id}, {
+            "INVOICE_ID": invoice_id,
+            "CLEARING_DATE": now.date(),
+            "IS_PARTIAL": is_partial,
+            "POSTING_TIMESTAMP": now,
+            "UPDATED_AT": now,
+        })
         promote_staging_to_mart("payment")
         status = "partially applied" if is_partial else "fully applied"
         return {
@@ -3820,8 +3740,6 @@ OrderToCash Dispute Resolution Team"""
 
 
 def dispute_agent_update_status(payload: dict) -> dict:
-    from FabicApp.db import run_execute
-
     dispute_id = str(payload.get("dispute_id", "") or "").strip()
     new_status = str(payload.get("dispute_status") or "IN_REVIEW").strip().upper()
     notes = str(payload.get("notes") or "Status updated via OrderToCash Dispute Agent").replace("'", "''")
@@ -3831,11 +3749,11 @@ def dispute_agent_update_status(payload: dict) -> dict:
         return {"ok": False, "message": "dispute_id is required"}
 
     try:
-        run_execute(f"""
-            UPDATE {LK_RV}.dispute_case SET DISPUTE_STATUS = '{new_status}', OWNER = COALESCE(OWNER, 'OrderToCash Agent'), UPDATED_AT = GETDATE()
-            WHERE
-              DISPUTE_ID = '{safe_id}'
-        """)
+        onelake.update("raw_vault.dispute_case", {"DISPUTE_ID": dispute_id}, lambda r: {
+            "DISPUTE_STATUS": new_status,
+            "OWNER": r.get("OWNER") if r.get("OWNER") is not None else "OrderToCash Agent",
+            "UPDATED_AT": onelake.now_utc(),
+        })
         promote_staging_to_mart("collections")
         return {"ok": True, "message": f"Dispute {dispute_id} moved to {new_status}. {notes}"}
     except Exception as exc:
@@ -3843,9 +3761,18 @@ def dispute_agent_update_status(payload: dict) -> dict:
         return {"ok": False, "message": f"Failed to update dispute: {exc}"}
 
 
-def dispute_agent_resolve(payload: dict) -> dict:
-    from FabicApp.db import run_execute
+def _days_between(start, end: datetime.date) -> int | None:
+    """T-SQL DATEDIFF(DAY, start, end): calendar-day boundaries; NULL if start is NULL."""
+    if start is None:
+        return None
+    if isinstance(start, datetime.datetime):
+        start = start.date()
+    elif not isinstance(start, datetime.date):
+        start = datetime.date.fromisoformat(str(start)[:10])
+    return (end - start).days
 
+
+def dispute_agent_resolve(payload: dict) -> dict:
     dispute_id = str(payload.get("dispute_id", "") or "").strip()
     resolution_type = str(payload.get("resolution_type") or "FULL").strip().upper()
     resolved_amount = float(payload.get("resolved_amount") or payload.get("disputed_amount") or 0)
@@ -3861,11 +3788,14 @@ def dispute_agent_resolve(payload: dict) -> dict:
         resolved_amount = 0
 
     try:
-        run_execute(f"""
-            UPDATE {LK_RV}.dispute_case SET DISPUTE_STATUS = '{status}', RESOLVED_AMOUNT = {resolved_amount}, RESOLVED_DATE = CAST(GETDATE() AS DATE), RESOLUTION_DAYS = DATEDIFF(DAY, OPENED_DATE, CAST(GETDATE() AS DATE)), UPDATED_AT = GETDATE()
-            WHERE
-              DISPUTE_ID = '{safe_id}'
-        """)
+        now = onelake.now_utc()
+        onelake.update("raw_vault.dispute_case", {"DISPUTE_ID": dispute_id}, lambda r: {
+            "DISPUTE_STATUS": status,
+            "RESOLVED_AMOUNT": resolved_amount,
+            "RESOLVED_DATE": now.date(),
+            "RESOLUTION_DAYS": _days_between(r.get("OPENED_DATE"), now.date()),
+            "UPDATED_AT": now,
+        })
         promote_staging_to_mart("collections")
         return {
             "ok": True,
