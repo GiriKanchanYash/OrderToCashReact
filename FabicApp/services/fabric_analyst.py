@@ -103,8 +103,10 @@ def validate_sql(sql: str) -> str:
         parts = [p.strip().strip("[]").upper() for p in ref.split(".")]
         if len(parts) == 1 and parts[0].lower() in ctes:
             continue
-        if len(parts) < 2 or parts[-2] != "BUSINESS_MART":
-            raise AnalystError(f"Generated SQL references a non-BUSINESS_MART object: {ref}")
+        if len(parts) < 2 or parts[-2] not in ("BUSINESS_MART", "INFORMATION_MART") \
+            or parts[-1] in ("SAVED_INSIGHTS", "GENIE_QUESTION_HISTORY"):
+          raise AnalystError(f"Generated SQL references a non-allowed object: {ref}")
+ 
     return s
 
 
