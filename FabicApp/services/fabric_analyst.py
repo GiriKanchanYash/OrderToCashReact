@@ -140,6 +140,7 @@ def call_analyst(instruction: str, question: str) -> dict:
     if text:
         content.append({"type": "text", "text": text})
     sql = str(data.get("sql") or "").strip()
+    print("\n ---- AI Generated SQL Query -----\n {sql} \n--------")
     if sql:
         try:
             content.append({"type": "sql", "statement": validate_sql(sql)})
