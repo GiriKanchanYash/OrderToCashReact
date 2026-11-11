@@ -5,12 +5,13 @@ on a stage) and returns {"message": {"content": [{"type": "text"}, {"type": "sql
 
 Fabric: Azure OpenAI generates one read-only T-SQL statement grounded in
   1. FabicApp/Schema_model.yml (your semantic model, if you populate it), and
-  2. the live column catalog of the BUSINESS_MART views (INFORMATION_SCHEMA),
+  2. (no live catalog: the Lakehouse tables in Schema_model.yml are the only source),
 and the response is returned in the *same* shape so the copied Copilot logic
 in ai_service.py runs unchanged.
 
 SECURITY: model output is untrusted. validate_sql() is the security boundary:
-single SELECT/WITH statement, no DML/DDL/EXEC, only BUSINESS_MART objects.
+single SELECT/WITH statement, no DML/DDL/EXEC, only OrderToCash_LK.information_mart
+tables (app tables SAVED_INSIGHTS / GENIE_QUESTION_HISTORY are blocked).
 """
 from __future__ import annotations
 
@@ -59,26 +60,11 @@ def _schema_context() -> str:
             parts.append("SEMANTIC MODEL:\n" + model[:20000])
     except OSError:
         pass
-    try:
-        rows = db.run_tsql(
-            """
-            SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE UPPER(TABLE_SCHEMA) = 'BUSINESS_MART'
-            ORDER BY TABLE_NAME, ORDINAL_POSITION
-            """
-        )
-        by_table: dict[str, list[str]] = {}
-        for r in rows:
-            by_table.setdefault(str(r["table_name"]), []).append(f"{r['column_name']} {r['data_type']}")
-        if by_table:
-            lines = [f"{db.BM}.{t} ({', '.join(cols)})" for t, cols in by_table.items()]
-            parts.append("AVAILABLE VIEWS (schema-qualify exactly as shown):\n" + "\n".join(lines))
-    except Exception:
-        log.warning("Could not read BUSINESS_MART catalog from Fabric", exc_info=True)
+    print(f"[AI ANALYST] Semantic model loaded: {len(parts[0]) if parts else 0} characters "
+          f"from {_SEMANTIC_MODEL_PATH}", flush=True)
     text = "\n\n".join(parts)
     if not text:
-        raise AnalystError("No schema context available (Schema_model.yml empty and catalog unreadable).")
+        raise AnalystError("No schema context available (Schema_model.yml is empty or missing).")
     with _schema_lock:
         _schema_cache = (time.time(), text)
     return text
@@ -103,10 +89,9 @@ def validate_sql(sql: str) -> str:
         parts = [p.strip().strip("[]").upper() for p in ref.split(".")]
         if len(parts) == 1 and parts[0].lower() in ctes:
             continue
-        if len(parts) < 2 or parts[-2] not in ("BUSINESS_MART", "INFORMATION_MART") \
-            or parts[-1] in ("SAVED_INSIGHTS", "GENIE_QUESTION_HISTORY"):
-          raise AnalystError(f"Generated SQL references a non-allowed object: {ref}")
- 
+        if (len(parts) != 3 or parts[0] != "ORDERTOCASH_LK" or parts[1] != "INFORMATION_MART"
+                or parts[2] in ("SAVED_INSIGHTS", "GENIE_QUESTION_HISTORY")):
+            raise AnalystError(f"Only OrderToCash_LK.information_mart tables are allowed: {ref}")
     return s
 
 
@@ -119,14 +104,15 @@ def call_analyst(instruction: str, question: str) -> dict:
             "Warehouse T-SQL SELECT statement.\n\n"
             f"{schema}\n\n"
             "Rules:\n"
-            "- Use only the views listed above, fully qualified exactly as shown (names are case-sensitive).\n"
+            "- Use ONLY the tables in the SEMANTIC MODEL, with three-part names exactly as in 'table:' "
+            "(OrderToCash_LK.information_mart.<table>). Never use business_mart or any other schema.\n"
             "- T-SQL only: TOP (n) not LIMIT, IIF/CASE not IFF, CAST(GETDATE() AS DATE) for today, "
             "DATEADD/DATEDIFF/DATETRUNC for dates. Never GROUP BY ordinal or alias.\n"
             f"- Return at most {MAX_ROWS} rows. Prefer readable names (CUSTOMER_NAME) next to IDs.\n"
             "- Read-only: never INSERT/UPDATE/DELETE/MERGE/DDL/EXEC.\n"
             "- In \"text\", briefly restate how you interpreted the question. Do NOT invent figures; "
             "numbers come from executing the SQL.\n"
-            'Respond as JSON: {"text": "...", "sql": "..."}. If it cannot be answered from these views, '
+            'Respond as JSON: {"text": "...", "sql": "..."}. If it cannot be answered from these tables, '
             'return {"text": "<why>", "sql": ""}.\n\n'
             f"{instruction}{question}"
         )
@@ -140,7 +126,7 @@ def call_analyst(instruction: str, question: str) -> dict:
     if text:
         content.append({"type": "text", "text": text})
     sql = str(data.get("sql") or "").strip()
-    print("\n ---- AI Generated SQL Query -----\n {sql} \n--------")
+    print(f"\n----- AI GENERATED SQL -----\n{sql or '(no SQL returned)'}\n----------------------------", flush=True)
     if sql:
         try:
             content.append({"type": "sql", "statement": validate_sql(sql)})
