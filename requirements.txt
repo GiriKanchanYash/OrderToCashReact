@@ -4,9 +4,18 @@ snowflake-connector-python>=3.6.0
 pydantic>=2.5.0
 python-dotenv>=1.0.0
 requests>=2.31.0
+
 # Microsoft Fabric data source
 pyodbc>=5.0.0
 azure-identity>=1.15.0
 azure-core>=1.30.0
+
+# OpenAI
 openai>=1.30.0
+
+# SQL parser
 sqlglot==30.21.0
+
+# Delta Lake / OneLake support
+pyarrow>=18.0.0
+deltalake>=0.20.0
