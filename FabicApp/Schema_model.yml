@@ -1,0 +1,227 @@
+name: order_to_cash_information_mart
+description: "Order-to-Cash / AR semantic model. Lakehouse OrderToCash_LK, schema information_mart, queried with three-part names from the OrderToCash_DW warehouse."
+rules:
+  - "Always use three-part names exactly as in 'table:' below. Table and schema names are lowercase, columns uppercase."
+  - "add is a reserved word: write OrderToCash_LK.information_mart.[add]."
+  - "Booleans are bit: = 1 / = 0. Text match: LOWER(col) LIKE '%x%' (collation is case-sensitive)."
+  - "Sum money with *_USD columns. Never sum document-currency amounts across CURRENCY_CODE; group by CURRENCY_CODE instead."
+  - "Prefer KPI tables (dso, cei, past_due, bpdso, [add] ...) over recomputing. Across company codes recompute ratios from sums; never average percentages."
+  - "Latest month = PERIOD_MONTH = (SELECT MAX(PERIOD_MONTH) FROM <same table>)."
+  - "ar_open_item, ar_aging, past_due, bpdso, [add], dso_countback are current snapshots: no date filters."
+  - "Customer names: join customer on CUSTOMER_ID and COMPANY_CODE, show CUSTOMER_NAME."
+  - "Cast numerators to FLOAT and wrap denominators in NULLIF(x, 0). No comments and no semicolons in SQL."
+  - "Never query genie_question_history or saved_insights (app tables)."
+  - "Lower is better: DSO, BPDSO, ADD, CCC, DBT, PAST_DUE_PCT, COST_PER_DOLLAR_COLLECTED, MAPE, WAPE. Higher is better: CEI, AR turnover, RPC, PTP kept rate."
+joins:
+  - "customer.CUSTOMER_ID (+ COMPANY_CODE) = CUSTOMER_ID in sales_order, ar_invoice, ar_open_item, ar_cleared_item, payment, collection_activity, dispute, ptp, delivery, order_status_history"
+  - "sales_order.SALES_ORDER_ID = ar_invoice / delivery / order_status_history.SALES_ORDER_ID"
+  - "ar_invoice.INVOICE_ID = ar_open_item / ar_cleared_item / payment / dispute / ptp / collection_activity.INVOICE_ID"
+  - "Monthly KPI tables join on PERIOD_MONTH + COMPANY_CODE; snapshot KPI tables join on COMPANY_CODE"
+synonyms:
+  DSO: days sales outstanding
+  BPDSO: best possible DSO
+  ADD: average days delinquent
+  CEI: collection effectiveness index
+  CCC: cash conversion cycle
+  DBT: days beyond terms
+  RPC: right party contact
+  PTP: promise to pay
+  overdue: ar_open_item.DAYS_PAST_DUE > 0
+  over limit: customer.CREDIT_EXPOSURE > customer.CREDIT_LIMIT
+tables:
+  customer:
+    table: OrderToCash_LK.information_mart.customer
+    desc: "Customer master with credit data."
+    grain: CUSTOMER_ID x COMPANY_CODE
+    notes: "CREDIT_EXPOSURE vs CREDIT_LIMIT is in CREDIT_LIMIT_CURRENCY; CREDIT_BLOCK=1 means orders held; CONTACT_NAME/CONTACT_EMAIL are PII, do not select."
+    columns: "CUSTOMER_ID varchar, CUSTOMER_NAME varchar, CUSTOMER_SEGMENT varchar, INDUSTRY varchar, CITY varchar, STATE_PROVINCE varchar, COUNTRY_CODE varchar, COUNTRY_NAME varchar, REGION varchar, CONTACT_NAME varchar, CONTACT_EMAIL varchar, ACCOUNT_MANAGER varchar, CURRENCY_CODE varchar, IS_ACTIVE bit, COMPANY_CODE varchar, CREDIT_LIMIT float, CREDIT_EXPOSURE float, CREDIT_LIMIT_CURRENCY varchar, RISK_CLASS varchar, CREDIT_SCORE bigint, PAYMENT_TERMS varchar, PAYMENT_TERM_DAYS bigint, DUNNING_LEVEL bigint, CREDIT_BLOCK bit"
+  sales_order:
+    table: OrderToCash_LK.information_mart.sales_order
+    desc: "Sales order headers."
+    grain: SALES_ORDER_ID
+    notes: "CREDIT_CHECK_STATUS = credit check result; values in CURRENCY_CODE."
+    columns: "SALES_ORDER_ID varchar, CUSTOMER_ID varchar, COMPANY_CODE varchar, SALES_ORG varchar, ORDER_TYPE varchar, ORDER_STATUS varchar, ORDER_DATE date, REQUESTED_DELIVERY_DATE date, CURRENCY_CODE varchar, NET_ORDER_VALUE float, TAX_VALUE float, TOTAL_ORDER_VALUE float, PAYMENT_TERMS varchar, CREDIT_CHECK_STATUS varchar, BILLING_TRIGGER_TYPE varchar, CREATED_BY varchar"
+  order_status_history:
+    table: OrderToCash_LK.information_mart.order_status_history
+    desc: "Order lifecycle status events."
+    grain: STATUS_EVENT_ID
+    notes: "IS_LATEST_STATUS=1 gives the current status; LIFECYCLE_AREA = order/credit/delivery/billing/payment stage."
+    columns: "SALES_ORDER_ID varchar, STATUS_EVENT_ID varchar, STATUS_SEQ bigint, LIFECYCLE_AREA varchar, ORDER_STATUS varchar, STATUS_DATE date, STATUS_TIMESTAMP datetime2, CHANGED_BY varchar, IS_LATEST_STATUS bit, NOTES varchar, CUSTOMER_ID varchar, COMPANY_CODE varchar"
+  delivery:
+    table: OrderToCash_LK.information_mart.delivery
+    desc: "Outbound deliveries."
+    grain: DELIVERY_ID
+    columns: "DELIVERY_ID varchar, SALES_ORDER_ID varchar, CUSTOMER_ID varchar, DELIVERY_TYPE varchar, DELIVERY_STATUS varchar, DELIVERY_DATE date, GOODS_ISSUE_DATE date, ACTUAL_DELIVERY_DATE date, SHIPPING_POINT varchar, CARRIER_NAME varchar, TOTAL_WEIGHT_KG float"
+  ar_invoice:
+    table: OrderToCash_LK.information_mart.ar_invoice
+    desc: "Invoices and credit memos."
+    grain: INVOICE_ID
+    notes: "AMOUNT_IN_USD = gross in USD; IS_CREDIT_SALE=1 for credit sales."
+    columns: "INVOICE_ID varchar, SALES_ORDER_ID varchar, CUSTOMER_ID varchar, COMPANY_CODE varchar, BILLING_TYPE varchar, INVOICE_DATE date, BASELINE_DATE date, DUE_DATE date, PAYMENT_TERMS varchar, PAYMENT_TERM_DAYS bigint, CURRENCY_CODE varchar, NET_AMOUNT float, TAX_AMOUNT float, GROSS_AMOUNT float, AMOUNT_IN_USD float, EXCHANGE_RATE float, INVOICE_STATUS varchar, IS_CREDIT_SALE bit"
+  ar_open_item:
+    table: OrderToCash_LK.information_mart.ar_open_item
+    desc: "Open receivables today (snapshot)."
+    grain: AR_ITEM_ID
+    notes: "Use OPEN_AMOUNT_USD for totals; DAYS_PAST_DUE>0 = overdue; IS_DISPUTED=1 = in dispute."
+    columns: "AR_ITEM_ID varchar, INVOICE_ID varchar, CUSTOMER_ID varchar, COMPANY_CODE varchar, POSTING_DATE date, BASELINE_DATE date, DUE_DATE date, PAYMENT_TERMS varchar, PAYMENT_TERM_DAYS bigint, CURRENCY_CODE varchar, OPEN_AMOUNT float, OPEN_AMOUNT_USD float, ORIGINAL_AMOUNT float, DUNNING_LEVEL bigint, IS_DISPUTED bit, DAYS_PAST_DUE int, AGING_BUCKET varchar"
+  ar_cleared_item:
+    table: OrderToCash_LK.information_mart.ar_cleared_item
+    desc: "Paid / cleared receivables."
+    grain: AR_ITEM_ID
+    notes: "DAYS_BEYOND_TERMS = days paid after due date; PAID_LATE=1 if late."
+    columns: "AR_ITEM_ID varchar, INVOICE_ID varchar, CUSTOMER_ID varchar, COMPANY_CODE varchar, POSTING_DATE date, DOCUMENT_DATE date, BASELINE_DATE date, DUE_DATE date, CLEARING_DATE date, CLEARING_DOC_ID varchar, PAYMENT_TERMS varchar, PAYMENT_TERM_DAYS bigint, CURRENCY_CODE varchar, CLEARED_AMOUNT float, CLEARED_AMOUNT_USD float, DAYS_TO_PAY bigint, DAYS_BEYOND_TERMS bigint, PAID_LATE bit"
+  payment:
+    table: OrderToCash_LK.information_mart.payment
+    desc: "Customer payments received."
+    grain: PAYMENT_ID
+    notes: "LATENCY_HOURS = receipt to posting; IS_PARTIAL=1 partial payment."
+    columns: "PAYMENT_ID varchar, INVOICE_ID varchar, CUSTOMER_ID varchar, COMPANY_CODE varchar, PAYMENT_METHOD varchar, PAYMENT_DATE date, CLEARING_DATE date, PREDICTED_PAYMENT_DATE date, CURRENCY_CODE varchar, PAYMENT_AMOUNT float, PAYMENT_AMOUNT_USD float, IS_PARTIAL bit, RECEIPT_TIMESTAMP datetime2, POSTING_TIMESTAMP datetime2, LATENCY_HOURS float"
+  collection_activity:
+    table: OrderToCash_LK.information_mart.collection_activity
+    desc: "Collector actions (calls, emails, letters)."
+    grain: ACTIVITY_ID
+    notes: "IS_RIGHT_PARTY_CONTACT=1 reached decision maker."
+    columns: "ACTIVITY_ID varchar, CUSTOMER_ID varchar, INVOICE_ID varchar, COMPANY_CODE varchar, COLLECTOR_ID varchar, COLLECTOR_NAME varchar, ACTIVITY_TYPE varchar, ACTIVITY_DATE date, CONTACT_OUTCOME varchar, IS_RIGHT_PARTY_CONTACT bit, AMOUNT_TARGETED float, AMOUNT_COLLECTED float, ACTIVITY_COST float, CURRENCY_CODE varchar"
+  dispute:
+    table: OrderToCash_LK.information_mart.dispute
+    desc: "Invoice disputes."
+    grain: DISPUTE_ID
+    notes: "RESOLVED_DATE IS NULL = open dispute; amounts in CURRENCY_CODE."
+    columns: "DISPUTE_ID varchar, INVOICE_ID varchar, CUSTOMER_ID varchar, COMPANY_CODE varchar, DISPUTE_REASON varchar, DISPUTE_STATUS varchar, DISPUTED_AMOUNT float, RESOLVED_AMOUNT float, CURRENCY_CODE varchar, OPENED_DATE date, RESOLVED_DATE date, RESOLUTION_DAYS int, OWNER varchar"
+  ptp:
+    table: OrderToCash_LK.information_mart.ptp
+    desc: "Promises to pay."
+    grain: PTP_ID
+    notes: "IS_KEPT=0 and PROMISED_PAY_DATE < today = broken promise."
+    columns: "PTP_ID varchar, CUSTOMER_ID varchar, INVOICE_ID varchar, COMPANY_CODE varchar, PROMISE_DATE date, PROMISED_PAY_DATE date, ACTUAL_PAY_DATE date, PROMISED_AMOUNT float, PAID_AMOUNT float, CURRENCY_CODE varchar, PTP_STATUS varchar, IS_KEPT bit"
+  ar_monthly_base:
+    table: OrderToCash_LK.information_mart.ar_monthly_base
+    desc: "Monthly AR base figures (USD)."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, INVOICED_MONTH float, CREDIT_SALES_MONTH float, TOTAL_SALES_MONTH float, CLEARED_MONTH float, INVOICED_TO_DATE float, CLEARED_TO_DATE float, CLOSING_AR float, OPENING_AR float, AVG_AR float, DAYS_IN_MONTH int, TRAILING_12M_SALES float, TRAILING_12M_CREDIT_SALES float"
+  dso:
+    table: OrderToCash_LK.information_mart.dso
+    desc: "Days Sales Outstanding."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "DSO = AVG_AR / CREDIT_SALES_MONTH * DAYS_IN_MONTH."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, AVG_AR float, CREDIT_SALES_MONTH float, DAYS_IN_MONTH int, DSO float"
+  ar_turnover:
+    table: OrderToCash_LK.information_mart.ar_turnover
+    desc: "AR turnover."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "AR_TURNOVER_ANNUALIZED = TRAILING_12M_CREDIT_SALES / AVG_AR."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, CREDIT_SALES_MONTH float, TRAILING_12M_CREDIT_SALES float, AVG_AR float, AR_TURNOVER_MONTHLY float, AR_TURNOVER_ANNUALIZED float"
+  ar_pct_revenue:
+    table: OrderToCash_LK.information_mart.ar_pct_revenue
+    desc: "AR as share of revenue."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "AR_PCT_OF_REVENUE = AVG_AR / ANNUAL_REVENUE."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, AVG_AR float, ANNUAL_REVENUE float, AR_PCT_OF_REVENUE float"
+  cei:
+    table: OrderToCash_LK.information_mart.cei
+    desc: "Collection Effectiveness Index (percent)."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "CEI = (BEGIN_AR + CREDIT_SALES - ENDING_TOTAL_AR) / (BEGIN_AR + CREDIT_SALES - ENDING_CURRENT_AR) * 100."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, BEGIN_AR float, CREDIT_SALES float, ENDING_TOTAL_AR float, ENDING_CURRENT_AR float, CEI float"
+  ccc:
+    table: OrderToCash_LK.information_mart.ccc
+    desc: "Cash Conversion Cycle (days)."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "CCC = DSO + DIO_ASSUMED_DAYS - DPO_ASSUMED_DAYS."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, DSO float, DIO_ASSUMED_DAYS int, DPO_ASSUMED_DAYS int, CCC float"
+  dbt:
+    table: OrderToCash_LK.information_mart.dbt
+    desc: "Days Beyond Terms."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, CLEARED_COUNT bigint, AVG_DBT float, AVG_DAYS_TO_PAY float, PCT_PAID_LATE float"
+  collection_cost:
+    table: OrderToCash_LK.information_mart.collection_cost
+    desc: "Cost of collections."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "COST_PER_DOLLAR_COLLECTED = TOTAL_COLLECTION_COST / TOTAL_COLLECTED."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, ACTIVITY_COUNT bigint, TOTAL_COLLECTION_COST float, TOTAL_COLLECTED float, COST_PER_DOLLAR_COLLECTED float"
+  rpc:
+    table: OrderToCash_LK.information_mart.rpc
+    desc: "Right-party-contact rate."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "RPC_RATE_PCT = RPC_COUNT / TOTAL_ATTEMPTS * 100."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, TOTAL_ATTEMPTS bigint, RPC_COUNT bigint, RPC_RATE_PCT float"
+  ptp_kept:
+    table: OrderToCash_LK.information_mart.ptp_kept
+    desc: "Promise-to-pay kept rate."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "PTP_KEPT_RATE_PCT = KEPT_PTPS / RESOLVED_PTPS * 100."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, TOTAL_PTPS bigint, KEPT_PTPS bigint, RESOLVED_PTPS bigint, PTP_KEPT_RATE_PCT float"
+  payment_prediction:
+    table: OrderToCash_LK.information_mart.payment_prediction
+    desc: "Payment-date prediction accuracy."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, TOTAL_PREDICTIONS bigint, CORRECT_PREDICTIONS bigint, BUCKET_ACCURACY_PCT float"
+  forecast_accuracy:
+    table: OrderToCash_LK.information_mart.forecast_accuracy
+    desc: "Cash forecast accuracy by model."
+    grain: PERIOD_MONTH x COMPANY_CODE x FORECAST_MODEL
+    notes: "MAPE, WAPE lower is better; FORECAST_BIAS > 0 = over-forecast."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, FORECAST_MODEL varchar, FORECAST_POINTS bigint, TOTAL_FORECAST float, TOTAL_ACTUAL float, MAPE float, WAPE float, FORECAST_BIAS float"
+  liquidity_latency:
+    table: OrderToCash_LK.information_mart.liquidity_latency
+    desc: "Payment receipt-to-posting latency (hours)."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, PAYMENT_COUNT bigint, AVG_LATENCY_HOURS float, MEDIAN_LATENCY_HOURS float, MAX_LATENCY_HOURS float"
+  working_capital_ar:
+    table: OrderToCash_LK.information_mart.working_capital_ar
+    desc: "Cost of carrying AR."
+    grain: PERIOD_MONTH x COMPANY_CODE
+    notes: "WACC is an annual rate (decimal)."
+    columns: "PERIOD_MONTH date, COMPANY_CODE varchar, AVG_AR float, CLOSING_AR float, DSO float, WACC float, WORKING_CAPITAL_CARRYING_COST_PERIOD float, ANNUAL_CARRYING_COST float"
+  ar_aging:
+    table: OrderToCash_LK.information_mart.ar_aging
+    desc: "AR aging by bucket (snapshot)."
+    grain: COMPANY_CODE x AGING_BUCKET
+    columns: "COMPANY_CODE varchar, AGING_BUCKET varchar, ITEM_COUNT bigint, BUCKET_OPEN_AMOUNT float, BUCKET_OPEN_AMOUNT_USD float"
+  past_due:
+    table: OrderToCash_LK.information_mart.past_due
+    desc: "Past-due position (snapshot)."
+    grain: COMPANY_CODE
+    notes: "PAST_DUE_PCT = PAST_DUE_AR / TOTAL_AR * 100."
+    columns: "COMPANY_CODE varchar, TOTAL_AR float, PAST_DUE_AR float, PAST_DUE_PCT float, CURRENT_AR float, BUCKET_1_30 float, BUCKET_31_60 float, BUCKET_61_90 float, BUCKET_90_PLUS float"
+  bpdso:
+    table: OrderToCash_LK.information_mart.bpdso
+    desc: "Best Possible DSO (snapshot)."
+    grain: COMPANY_CODE
+    notes: "BPDSO = CURRENT_RECEIVABLES / CREDIT_SALES_365 * 365."
+    columns: "COMPANY_CODE varchar, TOTAL_RECEIVABLES float, CURRENT_RECEIVABLES float, CREDIT_SALES_365 float, BPDSO float, DSO_SNAPSHOT float"
+  add:
+    table: OrderToCash_LK.information_mart.[add]
+    desc: "Average Days Delinquent (snapshot). Reserved word: always write [add]."
+    grain: COMPANY_CODE
+    notes: "AVG_DAYS_DELINQUENT = DSO_SNAPSHOT - BPDSO."
+    columns: "COMPANY_CODE varchar, DSO_SNAPSHOT float, BPDSO float, AVG_DAYS_DELINQUENT float"
+  dso_countback:
+    table: OrderToCash_LK.information_mart.dso_countback
+    desc: "DSO by count-back method (snapshot)."
+    grain: COMPANY_CODE
+    columns: "COMPANY_CODE varchar, RECEIVABLES float, DSO_COUNTBACK float"
+verified_queries:
+  - question: "Latest DSO by company code"
+    sql: "SELECT COMPANY_CODE, ROUND(DSO, 1) AS DSO FROM OrderToCash_LK.information_mart.dso WHERE PERIOD_MONTH = (SELECT MAX(PERIOD_MONTH) FROM OrderToCash_LK.information_mart.dso) ORDER BY DSO DESC"
+  - question: "DSO vs best possible DSO"
+    sql: "SELECT b.COMPANY_CODE, ROUND(b.DSO_SNAPSHOT, 1) AS DSO, ROUND(b.BPDSO, 1) AS BPDSO, ROUND(a.AVG_DAYS_DELINQUENT, 1) AS ADD_DAYS FROM OrderToCash_LK.information_mart.bpdso b JOIN OrderToCash_LK.information_mart.[add] a ON a.COMPANY_CODE = b.COMPANY_CODE"
+  - question: "Top 10 customers by overdue amount"
+    sql: "SELECT TOP (10) c.CUSTOMER_NAME, SUM(o.OPEN_AMOUNT_USD) AS OVERDUE_USD, MAX(o.DAYS_PAST_DUE) AS MAX_DAYS_PAST_DUE FROM OrderToCash_LK.information_mart.ar_open_item o JOIN OrderToCash_LK.information_mart.customer c ON c.CUSTOMER_ID = o.CUSTOMER_ID AND c.COMPANY_CODE = o.COMPANY_CODE WHERE o.DAYS_PAST_DUE > 0 GROUP BY c.CUSTOMER_NAME ORDER BY OVERDUE_USD DESC"
+  - question: "CEI this month"
+    sql: "SELECT ROUND(CAST(SUM(BEGIN_AR) + SUM(CREDIT_SALES) - SUM(ENDING_TOTAL_AR) AS FLOAT) / NULLIF(SUM(BEGIN_AR) + SUM(CREDIT_SALES) - SUM(ENDING_CURRENT_AR), 0) * 100, 1) AS CEI FROM OrderToCash_LK.information_mart.cei WHERE PERIOD_MONTH = (SELECT MAX(PERIOD_MONTH) FROM OrderToCash_LK.information_mart.cei)"
+  - question: "Collector performance last 90 days"
+    sql: "SELECT COLLECTOR_NAME, COUNT(*) AS ACTIVITIES, ROUND(AVG(CASE WHEN IS_RIGHT_PARTY_CONTACT = 1 THEN 100.0 ELSE 0 END), 1) AS RPC_RATE_PCT, SUM(AMOUNT_COLLECTED) AS COLLECTED FROM OrderToCash_LK.information_mart.collection_activity WHERE ACTIVITY_DATE >= DATEADD(DAY, -90, CAST(GETDATE() AS DATE)) GROUP BY COLLECTOR_NAME ORDER BY COLLECTED DESC"
+  - question: "Open disputes by reason"
+    sql: "SELECT DISPUTE_REASON, CURRENCY_CODE, COUNT(*) AS OPEN_DISPUTES, SUM(DISPUTED_AMOUNT) AS DISPUTED_AMOUNT FROM OrderToCash_LK.information_mart.dispute WHERE RESOLVED_DATE IS NULL GROUP BY DISPUTE_REASON, CURRENCY_CODE ORDER BY DISPUTED_AMOUNT DESC"
+  - question: "Orders stuck in credit check"
+    sql: "SELECT TOP (50) so.SALES_ORDER_ID, c.CUSTOMER_NAME, so.TOTAL_ORDER_VALUE, so.CURRENCY_CODE, h.ORDER_STATUS FROM OrderToCash_LK.information_mart.sales_order so JOIN OrderToCash_LK.information_mart.order_status_history h ON h.SALES_ORDER_ID = so.SALES_ORDER_ID AND h.IS_LATEST_STATUS = 1 JOIN OrderToCash_LK.information_mart.customer c ON c.CUSTOMER_ID = so.CUSTOMER_ID AND c.COMPANY_CODE = so.COMPANY_CODE WHERE LOWER(h.LIFECYCLE_AREA) LIKE '%credit%' ORDER BY so.TOTAL_ORDER_VALUE DESC"
+  - question: "DSO trend last 12 months"
+    sql: "SELECT PERIOD_MONTH, ROUND(CAST(SUM(AVG_AR) AS FLOAT) / NULLIF(SUM(CREDIT_SALES_MONTH), 0) * MAX(DAYS_IN_MONTH), 1) AS DSO FROM OrderToCash_LK.information_mart.dso WHERE PERIOD_MONTH >= DATEADD(MONTH, -11, (SELECT MAX(PERIOD_MONTH) FROM OrderToCash_LK.information_mart.dso)) GROUP BY PERIOD_MONTH ORDER BY PERIOD_MONTH"
+  - question: "AR aging summary"
+    sql: "SELECT AGING_BUCKET, SUM(ITEM_COUNT) AS ITEMS, SUM(BUCKET_OPEN_AMOUNT_USD) AS OPEN_USD FROM OrderToCash_LK.information_mart.ar_aging GROUP BY AGING_BUCKET ORDER BY AGING_BUCKET"
+  - question: "Customers over credit limit"
+    sql: "SELECT TOP (50) CUSTOMER_NAME, COMPANY_CODE, CREDIT_LIMIT, CREDIT_EXPOSURE, CREDIT_LIMIT_CURRENCY, CREDIT_BLOCK FROM OrderToCash_LK.information_mart.customer WHERE IS_ACTIVE = 1 AND CREDIT_EXPOSURE > CREDIT_LIMIT ORDER BY CREDIT_EXPOSURE - CREDIT_LIMIT DESC"
+  - question: "Broken promises to pay this month"
+    sql: "SELECT p.PTP_ID, c.CUSTOMER_NAME, p.PROMISED_PAY_DATE, p.PROMISED_AMOUNT, p.PAID_AMOUNT, p.CURRENCY_CODE FROM OrderToCash_LK.information_mart.ptp p JOIN OrderToCash_LK.information_mart.customer c ON c.CUSTOMER_ID = p.CUSTOMER_ID AND c.COMPANY_CODE = p.COMPANY_CODE WHERE p.IS_KEPT = 0 AND p.PROMISED_PAY_DATE BETWEEN DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1) AND CAST(GETDATE() AS DATE) ORDER BY p.PROMISED_AMOUNT DESC"
