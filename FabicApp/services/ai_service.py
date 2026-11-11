@@ -153,28 +153,45 @@ def get_current_user() -> str:
               CURRENT_USER AS USERNAME
         """)
         if rows:
-            return str(rows[0].get("USERNAME", "UNKNOWN"))
+            # Fabric rows come back with lower-case keys ("username").
+            return str(_val(rows[0], "USERNAME", default="UNKNOWN"))
     except Exception:
         log.warning("Could not fetch current user", exc_info=True)
     return "UNKNOWN"
 
 
 def save_question_history(question: str, qtype: str = "custom") -> None:
+    question = (question or "").strip()
+    if not question:
+        return
     user = get_current_user()
+    table = "information_mart.genie_question_history"
+    print(f"[QUESTION HISTORY] Saving: user={user!r} type={qtype!r} question={question[:120]!r}", flush=True)
+
+    updated = 0
     try:
-        safe_q = question.replace("'", "''")
         updated = onelake.update(
-            "information_mart.genie_question_history",
+            table,
             {"NORMALIZED_QUERY": question, "USER_NAME": user},
             lambda r: {"FREQUENCY": int(r.get("FREQUENCY") or 0) + 1, "LAST_ASKED_AT": onelake.now_utc(), "PERSONA": "ORDERLENS"},
         )
-        if not updated:
-            onelake.append(
-                "information_mart.genie_question_history",
-                {"NORMALIZED_QUERY": question, "TYPE": qtype, "USER_NAME": user, "FREQUENCY": 1, "PERSONA": "ORDERLENS"},
-                fill_now=("LAST_ASKED_AT", "CREATED_AT"),
-            )
-    except Exception:
+        if updated:
+            print(f"[QUESTION HISTORY] Updated existing row(s): {updated}", flush=True)
+            return
+    except Exception as exc:
+        # Don't give up: fall back to inserting a new row (counts are summed when read).
+        print(f"[QUESTION HISTORY] UPDATE failed -> {type(exc).__name__}: {exc}", flush=True)
+        log.warning("Question history update failed; falling back to insert", exc_info=True)
+
+    try:
+        onelake.append(
+            table,
+            {"NORMALIZED_QUERY": question, "TYPE": qtype, "USER_NAME": user, "FREQUENCY": 1, "PERSONA": "ORDERLENS"},
+            fill_now=("LAST_ASKED_AT",),
+        )
+        print("[QUESTION HISTORY] Inserted new row", flush=True)
+    except Exception as exc:
+        print(f"[QUESTION HISTORY] INSERT failed -> {type(exc).__name__}: {exc}", flush=True)
         log.warning("Could not save question history", exc_info=True)
 
 
@@ -225,49 +242,61 @@ def delete_insight(insight_id: int) -> None:
 
 def load_frequent_questions() -> list[dict]:
     user = get_current_user()
+    safe_user = user.replace("'", "''")
     try:
-        return run_query(f"""
+        rows = run_query(f"""
             SELECT
             TOP 10
               NORMALIZED_QUERY,
-              TYPE,
-              FREQUENCY
+              MAX(TYPE) AS TYPE,
+              SUM(COALESCE(FREQUENCY, 1)) AS FREQUENCY,
+              MAX(LAST_ASKED_AT) AS LAST_ASKED_AT
             FROM {LK_IM}.genie_question_history
             WHERE
-              USER_NAME = '{user}'
+              USER_NAME = '{safe_user}'
               AND (
                 PERSONA = 'ORDERLENS' OR PERSONA IS NULL
               )
-              AND {_COPILOT_HISTORY_FILTER}
+              AND COALESCE(TYPE, 'custom') NOT IN ('ctb_readiness', 'part_shortages', 'supplier_performance', 'bom_completeness')
+              AND {_COPILOT_HISTORY_TEXT_FILTER}
+            GROUP BY
+              NORMALIZED_QUERY
             ORDER BY
-              CASE WHEN FREQUENCY IS NULL THEN 1 ELSE 0 END DESC, FREQUENCY DESC,
-              CASE WHEN LAST_ASKED_AT IS NULL THEN 1 ELSE 0 END DESC, LAST_ASKED_AT DESC
+              SUM(COALESCE(FREQUENCY, 1)) DESC,
+              MAX(LAST_ASKED_AT) DESC
         """)
-    except Exception:
+        print(f"[QUESTION HISTORY] Frequently asked by you ({user}): {len(rows)} rows", flush=True)
+        return rows
+    except Exception as exc:
+        print(f"[QUESTION HISTORY] Load (by you) failed -> {type(exc).__name__}: {exc}", flush=True)
         log.warning("Could not load frequent questions", exc_info=True)
     return []
 
 
 def load_most_frequent_all() -> list[dict]:
     try:
-        return run_query(f"""
+        rows = run_query(f"""
             SELECT
             TOP 10
               NORMALIZED_QUERY,
-              TYPE,
-              SUM(FREQUENCY) AS TOTAL_FREQ
+              MAX(TYPE) AS TYPE,
+              SUM(COALESCE(FREQUENCY, 1)) AS TOTAL_FREQ
             FROM {LK_IM}.genie_question_history
             WHERE
               (
                 PERSONA = 'ORDERLENS' OR PERSONA IS NULL
-              ) AND {_COPILOT_HISTORY_FILTER}
+              )
+              AND COALESCE(TYPE, 'custom') NOT IN ('ctb_readiness', 'part_shortages', 'supplier_performance', 'bom_completeness')
+              AND {_COPILOT_HISTORY_TEXT_FILTER}
             GROUP BY
-              NORMALIZED_QUERY,
-              TYPE
+              NORMALIZED_QUERY
             ORDER BY
-              CASE WHEN SUM(FREQUENCY) IS NULL THEN 1 ELSE 0 END DESC, SUM(FREQUENCY) DESC
+              SUM(COALESCE(FREQUENCY, 1)) DESC
         """)
-    except Exception:
+        print(f"[QUESTION HISTORY] Most frequent (all users): {len(rows)} rows", flush=True)
+        return rows
+    except Exception as exc:
+        print(f"[QUESTION HISTORY] Load (all users) failed -> {type(exc).__name__}: {exc}", flush=True)
         log.warning("Could not load most frequent questions", exc_info=True)
     return []
 
@@ -286,6 +315,16 @@ _COPILOT_PAGE = "orderlens_copilot"
 _COPILOT_HISTORY_FILTER = """
     TYPE NOT IN ('ctb_readiness', 'part_shortages', 'supplier_performance', 'bom_completeness')
     AND LOWER(NORMALIZED_QUERY) NOT LIKE '%clear-to-build%'
+    AND LOWER(NORMALIZED_QUERY) NOT LIKE '%ready to build%'
+    AND LOWER(NORMALIZED_QUERY) NOT LIKE '%work order%'
+    AND LOWER(NORMALIZED_QUERY) NOT LIKE '%shortage%'
+    AND LOWER(NORMALIZED_QUERY) NOT LIKE '%supplier%delivery%'
+    AND LOWER(NORMALIZED_QUERY) NOT LIKE '%incomplete bom%'
+    AND LOWER(NORMALIZED_QUERY) NOT LIKE '%peg%'
+"""
+
+_COPILOT_HISTORY_TEXT_FILTER = """
+    LOWER(NORMALIZED_QUERY) NOT LIKE '%clear-to-build%'
     AND LOWER(NORMALIZED_QUERY) NOT LIKE '%ready to build%'
     AND LOWER(NORMALIZED_QUERY) NOT LIKE '%work order%'
     AND LOWER(NORMALIZED_QUERY) NOT LIKE '%shortage%'
